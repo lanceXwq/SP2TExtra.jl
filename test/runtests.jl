@@ -62,6 +62,40 @@ end
     @test SP2TExtra.cartesianize(indices, w, w * h) == cartesian
 end
 
+# The sparse format lists each frame's clicks (0-based pixel indices, Int32) followed by a
+# delimiter (the number of pixels). A recording that stops mid-frame has no delimiter after
+# its last clicks: they are kept as a last frame, with a warning.
+@testset "Sparse binary tests" begin
+    w, h = 5, 4
+    frames = zeros(UInt16, w, h, 3)
+    for (i, j, k) in ((2, 1, 1), (4, 3, 1), (3, 2, 2), (5, 4, 2), (2, 2, 3), (4, 3, 3))
+        frames[i, j, k] = 1
+    end
+    signals = Int32[]
+    for k in 1:3
+        append!(signals, findall(!iszero, vec(frames[:, :, k])) .- 1)
+        push!(signals, w * h)
+    end
+    toframes(indices) = getframes(indices, width=w, height=h, batchsize=1)
+    toindices(signals) = SP2TExtra.signal2indices!(signals .+ Int32(1), w * h)
+
+    @test toframes(@test_logs toindices(signals)) == frames
+    warning = (:warn, r"not a frame delimiter")
+    @test toframes(@test_logs warning toindices(signals[1:end-1])) == frames
+    # no delimiter at all: one frame
+    @test toframes(@test_logs warning toindices(signals[1:2])) == frames[:, :, 1:1]
+    @test isempty(@test_logs toindices(Int32[]))
+
+    mktempdir() do dir
+        write(joinpath(dir, "terminated.bin"), signals)
+        write(joinpath(dir, "unterminated.bin"), signals[1:end-1])
+        redirect_stdout(devnull) do
+            @test toframes(readbin(joinpath(dir, "terminated.bin"), width=w, height=h)) == frames
+            @test toframes(@test_logs warning readbin(joinpath(dir, "unterminated.bin"), width=w, height=h)) == frames
+        end
+    end
+end
+
 # @testset "MSD tests" begin
 #     x = randn(10, 5, 3)
 #     @test isapprox(msd(x), sum(diff(x, dims=1) .^ 2) / (3 * (10 - 1)))

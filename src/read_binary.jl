@@ -263,9 +263,14 @@ end
 function popdelimiters!(signals::AbstractVector, framesize)
     """Remove delimiter values (>= framesize) from signal array."""
     delimiters = findall(>(framesize), signals)
-    delimiters[end] != length(signals) && @warn "The last signal is not a delimiter."
+    # a recording that stops mid-frame has clicks after its last delimiter
+    unterminated = !isempty(signals) && (isempty(delimiters) || delimiters[end] != length(signals))
     deleteat!(signals, delimiters)
     delimiters .-= 1:length(delimiters)
+    if unterminated
+        @warn "The last signal is not a frame delimiter: the clicks after the last delimiter are kept as a last frame, which may be incomplete."
+        push!(delimiters, length(signals)) # close the last frame
+    end
     return delimiters
 end
 

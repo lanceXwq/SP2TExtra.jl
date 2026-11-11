@@ -1,6 +1,7 @@
 module SP2TExtra
 
 using SP2T, Combinatorics, StatsBase, TiffImages, MAT, ImageCore, Statistics
+using ProgressMeter: @showprogress
 using XMLDict
 
 export binframes, bintracks
@@ -11,7 +12,7 @@ export xml2tracks
 
 include("histcounts.jl")
 include("binframes.jl")
-include("import.jl")
+include("read_binary.jl")
 include("preprocess.jl")
 include("postprocess.jl")
 include("trackmate.jl")

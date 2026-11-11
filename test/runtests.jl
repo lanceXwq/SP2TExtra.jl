@@ -123,6 +123,32 @@ end
     @test getframes(ROIindices, width=2, height=2, batchsize=1, nframes=5) == frames[1:2, :, :]
 end
 
+# The dense format stores one bit per pixel, most significant bit first, frame by frame in
+# column-major order. Reading sums batches of frames (keeping a partial last batch, with a
+# warning) and can crop; any frame size works.
+@testset "Dense binary tests" begin
+    w, h = 8, 4
+    bits = BitArray(isodd(i * j + k) && (i + 2j + 3k) % 5 != 0 for i in 1:w, j in 1:h, k in 1:10)
+    pack(b) = [reduce(|, UInt8(b[8(n-1)+m]) << (8 - m) for m in 1:8) for n in 1:length(b)÷8]
+    summed(b, s) = cat((sum(UInt16.(b[:, :, k:min(k + s - 1, end)]), dims=3) for k in 1:s:size(b, 3))..., dims=3)
+    mktempdir() do dir
+        write(joinpath(dir, "1.bin"), pack(bits[:, :, 1:6]))
+        write(joinpath(dir, "2.bin"), pack(bits[:, :, 7:10]))
+        redirect_stdout(devnull) do
+            read(; kwargs...) = readbin(dir; format=:dense, width=w, height=h, kwargs...)
+            @test read(batchsize=1) == summed(bits, 1)
+            @test read(batchsize=5) == summed(bits, 5)
+            @test (@test_logs (:warn, r"only contains 2 frames") read(batchsize=4)) == summed(bits, 4)
+            @test read(batchsize=5, crop_origin=(3, 2), crop_width=4, crop_height=2) ==
+                  summed(bits[3:6, 2:3, :], 5)
+            @test_throws ArgumentError read(batchsize=5, crop_origin=(6, 1), crop_width=4)
+            @test_logs (:warn, r"Expected 6 frames") SP2TExtra.readbin_dense_directory(
+                dir; width=w, height=h, batchsize=5, frames_per_file=6)
+            @test_throws ArgumentError readbin(dir; width=w, height=h, crop_width=4)
+        end
+    end
+end
+
 # @testset "MSD tests" begin
 #     x = randn(10, 5, 3)
 #     @test isapprox(msd(x), sum(diff(x, dims=1) .^ 2) / (3 * (10 - 1)))

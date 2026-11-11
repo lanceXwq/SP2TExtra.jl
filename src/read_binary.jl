@@ -158,13 +158,16 @@ function readbin_dense_directory(
     path;
     width=512,
     height=512,
-    frames_per_file=1000,
+    frames_per_file=nothing,
     batchsize=1000,
-    crop_width=512,
-    crop_height=512,
+    crop_width=width,
+    crop_height=height,
     crop_origin=(1, 1),
 )
-    """Read dense binary files from a directory with batching and optional cropping."""
+    """Read dense binary files from a directory with batching and optional cropping.
+
+    The crop defaults to the whole frame. Given `frames_per_file`, warn about files with a
+    different number of frames."""
     files = checkpath(path)
     file_sizes_in_bits = filesize.(files) * 8
     n_frames_per_file = file_sizes_in_bits .÷ (width * height)
@@ -188,7 +191,8 @@ function readbin_dense_directory(
     @showprogress 3 "Reading binary image data" for file in files
         frames = readbin_dense_one_file(file; width=width, height=height)
 
-        size(frames, 3) != frames_per_file && @warn "Expected $frames_per_file frames in $file, found $(size(frames, 3))"
+        !isnothing(frames_per_file) && size(frames, 3) != frames_per_file &&
+            @warn "Expected $frames_per_file frames in $file, found $(size(frames, 3))"
 
         if crop_width < width || crop_height < height
             frames = crop_frames(frames, crop_width, crop_height, crop_origin)
@@ -339,7 +343,7 @@ batchindices(indices, framesize, batchsize) =
 # ============================================================================
 
 """
-    readbin(path; format=:auto, width=512, height=512, batchsize=1000)
+    readbin(path; format=:sparse, width=512, height=512, batchsize=1000, crop_origin, crop_width, crop_height)
 
 Read binary image data in dense or sparse format.
 
@@ -348,12 +352,24 @@ Read binary image data in dense or sparse format.
 - `format`: `:dense` or `:sparse` (default)
 - `width`, `height`: Image dimensions
 - `batchsize`: Frames per batch (dense only)
+- `crop_origin`, `crop_width`, `crop_height`: Region to keep while reading (dense only;
+  default: the whole frame). `crop_origin` is the 1-based `(x, y)` of its first pixel. For
+  sparse files, crop the indices afterwards with `extractROI`.
 
 # Returns
 - Dense format: Batched frames array (width × height × nbatches)
 - Sparse format: Pixel indices array
 """
-function readbin(path; format=:sparse, width::Integer=512, height::Integer=512, batchsize::Integer=1000)
+function readbin(
+    path;
+    format=:sparse,
+    width::Integer=512,
+    height::Integer=512,
+    batchsize::Integer=1000,
+    crop_origin::Union{NTuple{2,Integer},Nothing}=nothing,
+    crop_width::Union{Integer,Nothing}=nothing,
+    crop_height::Union{Integer,Nothing}=nothing,
+)
     files = checkpath(path)
     printfilelist(files)
 
@@ -362,9 +378,15 @@ function readbin(path; format=:sparse, width::Integer=512, height::Integer=512, 
             path;
             width=width,
             height=height,
-            batchsize=batchsize
+            batchsize=batchsize,
+            crop_origin=something(crop_origin, (1, 1)),
+            crop_width=something(crop_width, width),
+            crop_height=something(crop_height, height),
         )
     elseif format == :sparse
+        all(isnothing, (crop_origin, crop_width, crop_height)) || throw(
+            ArgumentError("Cropping while reading applies to dense files only; crop sparse indices with `extractROI`."),
+        )
         @time signals = _readbin(files)
         @time return signal2indices!(signals, width * height)
     else

@@ -45,7 +45,7 @@ end
 
 linearize(cartesianindices::AbstractVector{<:Integer}, width::Integer, height::Integer) =
     (cartesianindices[3] - 1) * height * width +
-    (cartesianindices[2] - 1) * height +
+    (cartesianindices[2] - 1) * width +
     cartesianindices[1]
 
 function linearize(
@@ -54,7 +54,7 @@ function linearize(
     height::Integer,
 )
     indices = similar(cartesianindices, axes(cartesianindices, 1))
-    return linearize!(indices, cartesianindices, height, width)
+    return linearize!(indices, cartesianindices, width, height)
 end
 
 function linearize!(
@@ -65,7 +65,7 @@ function linearize!(
 )
     @views @. indices =
         (cartesianindices[:, 3] - 1) * height * width +
-        (cartesianindices[:, 2] - 1) * height +
+        (cartesianindices[:, 2] - 1) * width +
         cartesianindices[:, 1]
     return indices
 end

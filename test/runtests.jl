@@ -39,6 +39,29 @@ using Test
     @test isapprox(xml2tracks("./testtracks.xml", nframes=34, batchsize=1), gttracks)
 end
 
+# A click at column i, row j of frame k has the linear index (k-1)·w·h + (j-1)·w + i.
+# Extracting a region of clicks must equal slicing the frames, also when the region is not
+# square. Every region below has a click in the last frame.
+@testset "ROI tests" begin
+    w, h = 5, 4
+    frames = zeros(UInt16, w, h, 3)
+    for (i, j, k) in ((2, 1, 1), (4, 3, 1), (3, 2, 2), (5, 4, 2), (2, 2, 3), (4, 3, 3))
+        frames[i, j, k] = 1
+    end
+    indices = findall(!iszero, vec(frames))
+    @test getframes(indices, width=w, height=h, batchsize=1) == frames
+    for (origin, range) in (((2, 1, 1), (4, 3, 3)), ((2, 2, 1), (3, 3, 3)), ((2, 1, 1), (3, 2, 3)))
+        expected = frames[origin[1]:origin[1]+range[1]-1, origin[2]:origin[2]+range[2]-1, :]
+        ROIindices = extractROI(indices, (w, h), origin, range)
+        @test getframes(ROIindices, width=range[1], height=range[2], batchsize=1) == expected
+    end
+    # the single-click and matrix methods agree with the definition
+    cartesian = [2 1 1; 4 3 1; 3 2 2; 5 4 2; 2 2 3; 4 3 3]
+    @test SP2TExtra.linearize(cartesian, w, h) == indices
+    @test [SP2TExtra.linearize(c, w, h) for c in eachrow(cartesian)] == indices
+    @test SP2TExtra.cartesianize(indices, w, w * h) == cartesian
+end
+
 # @testset "MSD tests" begin
 #     x = randn(10, 5, 3)
 #     @test isapprox(msd(x), sum(diff(x, dims=1) .^ 2) / (3 * (10 - 1)))

@@ -287,22 +287,36 @@ function getframes(
     width::Integer,
     height::Integer,
     batchsize::Integer,
+    nframes::Union{Integer,Nothing}=nothing,
     threshold::Integer=typemax(Int),
 )
-    """Convert sparse indices to batched frame arrays."""
+    """Convert sparse indices to batched frame arrays.
+
+    `nframes` is the number of raw frames. Without it, the frames end with the last click,
+    so trailing frames without clicks are lost (as is common after `extractROI`). A last
+    batch of fewer than `batchsize` raw frames is kept, with a warning: it sums fewer frames
+    than the others."""
     framesize = width * height
-    nframes, framesleft = countframes(indices[end], framesize, batchsize)
+    if isnothing(nframes)
+        isempty(indices) &&
+            throw(ArgumentError("There are no clicks to count the frames from; pass `nframes`."))
+        nframes = fld1(maximum(indices), framesize)
+    elseif !isempty(indices) && maximum(indices) > nframes * framesize
+        throw(ArgumentError("There are clicks after frame $nframes (`nframes`)."))
+    end
+    nbatches, framesleft = countframes(nframes, batchsize)
     framesleft != 0 &&
-        @warn "The last batch contains $framesleft frames, fewer than the batchsize provided."
-    frames = _getframes(indices, framesize, batchsize, nframes)
+        @warn "The last batch sums $framesleft frames, fewer than the batchsize ($batchsize)."
+    frames = _getframes(indices, framesize, batchsize, nbatches)
     for i in eachindex(frames)
         frames[i] .> threshold && (frames[i] = 0)
     end
-    return reshape(frames, width, height, nframes)
+    return reshape(frames, width, height, nbatches)
 end
 
-countframes(lastindex::Integer, framesize::Integer, batchsize::Integer) =
-    divrem(fld1(lastindex, framesize), batchsize)
+# the number of batches, the last one partial when the remainder is not zero
+countframes(nframes::Integer, batchsize::Integer) =
+    (cld(nframes, batchsize), rem(nframes, batchsize))
 
 function _getframes(
     indices::AbstractVector{<:Integer},

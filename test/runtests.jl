@@ -96,6 +96,33 @@ end
     end
 end
 
+# getframes with batches: a batch sums batchsize raw frames, and a last partial batch is kept
+# (with a warning). Without nframes the frames end at the last click; with it, trailing
+# frames without clicks are kept.
+@testset "Batching tests" begin
+    w, h = 3, 2
+    frames = zeros(UInt16, w, h, 5)
+    for (i, j, k) in ((1, 1, 1), (3, 2, 1), (2, 1, 2), (1, 1, 3), (3, 1, 3))
+        frames[i, j, k] = 1
+    end # frames 4 and 5 have no clicks
+    indices = findall(!iszero, vec(frames))
+    batched(b) = cat((sum(frames[:, :, k:min(k + b - 1, 5)], dims=3) for k in 1:b:5)..., dims=3)
+
+    @test getframes(indices, width=w, height=h, batchsize=1) == frames[:, :, 1:3]
+    @test getframes(indices, width=w, height=h, batchsize=1, nframes=5) == frames
+    @test getframes(indices, width=w, height=h, batchsize=5, nframes=5) == batched(5)
+    partial = (:warn, r"last batch sums 1 frames")
+    @test (@test_logs partial getframes(indices, width=w, height=h, batchsize=2, nframes=5)) == batched(2)
+    @test (@test_logs partial getframes(indices, width=w, height=h, batchsize=2)) == batched(2)[:, :, 1:2]
+    @test getframes(Int[], width=w, height=h, batchsize=1, nframes=2) == zeros(UInt16, w, h, 2)
+    @test_throws ArgumentError getframes(Int[], width=w, height=h, batchsize=1)
+    @test_throws ArgumentError getframes(indices, width=w, height=h, batchsize=1, nframes=2)
+
+    # a region whose last frame has no clicks keeps all its frames with nframes
+    ROIindices = extractROI(indices, (w, h), (1, 1, 1), (2, 2, 5))
+    @test getframes(ROIindices, width=2, height=2, batchsize=1, nframes=5) == frames[1:2, :, :]
+end
+
 # @testset "MSD tests" begin
 #     x = randn(10, 5, 3)
 #     @test isapprox(msd(x), sum(diff(x, dims=1) .^ 2) / (3 * (10 - 1)))

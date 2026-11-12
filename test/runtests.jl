@@ -74,6 +74,15 @@ using Test
     end
 end
 
+# The binary readers are documented (a string inside a function body documents nothing).
+@testset "Docstring tests" begin
+    for name in (:readbin, :getframes, :readbin_dense_directory, :crop_frames,
+        :write_frames_to_tiff, :_readbin, :countsignals, :readsignals!, :signal2indices!,
+        :popdelimiters!, :shiftindices!, :_getframes)
+        @test Base.Docs.hasdoc(SP2TExtra, name)
+    end
+end
+
 # A click at column i, row j of frame k has the linear index (k-1)·w·h + (j-1)·w + i.
 # Extracting a region of clicks must equal slicing the frames, also when the region is not
 # square. Every region below has a click in the last frame.

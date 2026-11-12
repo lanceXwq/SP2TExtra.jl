@@ -1,10 +1,8 @@
-"""
-    read_binary.jl
-
-Unified interface for reading binary image data in dense and sparse formats.
-- Dense: All pixels stored as bits
-- Sparse: Only activated pixel indices stored as 32-bit integers
-"""
+# read_binary.jl
+#
+# Unified interface for reading binary image data in dense and sparse formats.
+# - Dense: All pixels stored as bits
+# - Sparse: Only activated pixel indices stored as 32-bit integers
 
 # ============================================================================
 # SHARED UTILITIES - Coordinate Conversion
@@ -142,11 +140,14 @@ function readbin_dense_one_file(file_path; width=512, height=512)
     reshape(BYTE_TO_BITS_MSB[:, read(file_path).+1], width, height, :)
 end
 
-function crop_frames(frames, crop_width, crop_height, crop_origin)
-    """Crop frames to a region of interest (ROI).
+"""
+    crop_frames(frames, crop_width, crop_height, crop_origin)
 
-    crop_origin is 1-based, e.g. (1, 1) means top-left pixel.
-    """
+Crop frames to a region of interest (ROI).
+
+crop_origin is 1-based, e.g. (1, 1) means top-left pixel.
+"""
+function crop_frames(frames, crop_width, crop_height, crop_origin)
     x0 = crop_origin[1]
     y0 = crop_origin[2]
     x1 = x0 + crop_width - 1
@@ -154,6 +155,14 @@ function crop_frames(frames, crop_width, crop_height, crop_origin)
     return frames[x0:x1, y0:y1, :]
 end
 
+"""
+    readbin_dense_directory(path; width=512, height=512, frames_per_file=nothing, batchsize=1000, crop_width=width, crop_height=height, crop_origin=(1, 1))
+
+Read dense binary files from a directory with batching and optional cropping.
+
+The crop defaults to the whole frame. Given `frames_per_file`, warn about files with a
+different number of frames.
+"""
 function readbin_dense_directory(
     path;
     width=512,
@@ -164,10 +173,6 @@ function readbin_dense_directory(
     crop_height=height,
     crop_origin=(1, 1),
 )
-    """Read dense binary files from a directory with batching and optional cropping.
-
-    The crop defaults to the whole frame. Given `frames_per_file`, warn about files with a
-    different number of frames."""
     files = checkpath(path)
     file_sizes_in_bits = filesize.(files) * 8
     n_frames_per_file = file_sizes_in_bits .÷ (width * height)
@@ -220,16 +225,24 @@ end
 # SPARSE FORMAT - Index Reading & Frame Generation
 # ============================================================================
 
+"""
+    _readbin(files)
+
+Internal: Read raw binary data from files as 32-bit integers.
+"""
 function _readbin(files::AbstractVector)
-    """Internal: Read raw binary data from files as 32-bit integers."""
     nsignals = countsignals(files)
     signals = Vector{Int32}(undef, sum(nsignals))
     readsignals!(files, signals, nsignals)
     return signals
 end
 
+"""
+    countsignals(files)
+
+Count signals (32-bit integers) in each file.
+"""
 function countsignals(files::AbstractVector)
-    """Count signals (32-bit integers) in each file."""
     sizes = filesize.(files)
     corrupted = iscorrupted.(sizes)
     any(corrupted) && throw(
@@ -243,12 +256,16 @@ end
 
 iscorrupted(sizeinbyte) = sizeinbyte % 4 != 0
 
+"""
+    readsignals!(files, signals, nsignals)
+
+Read raw signals from files and increment by 1 (0-indexing to 1-indexing).
+"""
 function readsignals!(
     files::AbstractVector{String},
     signals::Vector{<:Integer},
     nsignals::AbstractVector{<:Integer},
 )
-    """Read raw signals from files and increment by 1 (0-indexing to 1-indexing)."""
     start = 1
     @inbounds for (file, number) in zip(files, nsignals)
         read!(file, view(signals, range(start, length=number)))
@@ -257,15 +274,24 @@ function readsignals!(
     return signals .+= 1
 end
 
+"""
+    signal2indices!(indices, framesize)
+
+Convert raw signals to pixel indices by removing frame delimiters.
+"""
 function signal2indices!(indices::AbstractVector, framesize)
-    """Convert raw signals to pixel indices by removing frame delimiters."""
     delimiters = popdelimiters!(indices, framesize)
     indices = convert(Vector{Int}, indices)
     return shiftindices!(indices, delimiters, framesize)
 end
 
+"""
+    popdelimiters!(signals, framesize)
+
+Remove delimiter values from signal array. A delimiter is framesize in the file, so
+framesize + 1 after `readsignals!` adds 1: every signal above framesize.
+"""
 function popdelimiters!(signals::AbstractVector, framesize)
-    """Remove delimiter values (>= framesize) from signal array."""
     delimiters = findall(>(framesize), signals)
     # a recording that stops mid-frame has clicks after its last delimiter
     unterminated = !isempty(signals) && (isempty(delimiters) || delimiters[end] != length(signals))
@@ -278,14 +304,28 @@ function popdelimiters!(signals::AbstractVector, framesize)
     return delimiters
 end
 
+"""
+    shiftindices!(indices, delimiters, framesize)
+
+Add appropriate framesize offsets to indices based on frame boundaries.
+"""
 function shiftindices!(indices, delimiters, framesize)
-    """Add appropriate framesize offsets to indices based on frame boundaries."""
     @inbounds for i = 1:length(delimiters)-1
         @views indices[delimiters[i]+1:delimiters[i+1]] .+= i * framesize
     end
     return indices
 end
 
+"""
+    getframes(indices; width, height, batchsize, nframes=nothing, threshold=typemax(Int))
+
+Convert sparse indices to batched frame arrays.
+
+`nframes` is the number of raw frames. Without it, the frames end with the last click,
+so trailing frames without clicks are lost (as is common after `extractROI`). A last
+batch of fewer than `batchsize` raw frames is kept, with a warning: it sums fewer frames
+than the others.
+"""
 function getframes(
     indices::AbstractVector{<:Integer};
     width::Integer,
@@ -294,12 +334,6 @@ function getframes(
     nframes::Union{Integer,Nothing}=nothing,
     threshold::Integer=typemax(Int),
 )
-    """Convert sparse indices to batched frame arrays.
-
-    `nframes` is the number of raw frames. Without it, the frames end with the last click,
-    so trailing frames without clicks are lost (as is common after `extractROI`). A last
-    batch of fewer than `batchsize` raw frames is kept, with a warning: it sums fewer frames
-    than the others."""
     framesize = width * height
     if isnothing(nframes)
         isempty(indices) &&
@@ -322,13 +356,17 @@ end
 countframes(nframes::Integer, batchsize::Integer) =
     (cld(nframes, batchsize), rem(nframes, batchsize))
 
+"""
+    _getframes(indices, framesize, batchsize, count)
+
+Internal: Generate frame array from indices using histogram counting.
+"""
 function _getframes(
     indices::AbstractVector{<:Integer},
     framesize::Integer,
     batchsize::Integer,
     count::Integer,
 )
-    """Internal: Generate frame array from indices using histogram counting."""
     npixels = framesize * count
     frames = zeros(UInt16, npixels)
     addcounts!(frames, batchindices(indices, framesize, batchsize), 1:npixels)
@@ -421,8 +459,12 @@ end
 #     return fig
 # end
 
+"""
+    write_frames_to_tiff(fname, frames; pixel_size=0.1, unit="um", period=1e-5)
+
+Write frame array to TIFF file with metadata.
+"""
 function write_frames_to_tiff(fname, frames; pixel_size=0.1, unit="um", period=1e-5)
-    """Write frame array to TIFF file with metadata."""
     frames = convert(Array{UInt16,3}, frames)
     println(size(frames))
     writetiff(fname, frames, px_size=pixel_size, unit=unit, period=period)

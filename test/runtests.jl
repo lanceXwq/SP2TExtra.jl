@@ -235,6 +235,27 @@ end
             end
         end
     end
+
+    # Rows of whole bytes are added a byte at a time, into one-byte counters added to the
+    # frames before they overflow. Pixel (1, 1) clicks in all 600 frames, so each batch of
+    # 300 counts 300; the first batch spans both files (250 + 350 frames).
+    long = BitArray(isodd(i * j + k) && (i + j + k) % 3 != 0 for i in 1:16, j in 1:3, k in 1:600)
+    long[1, 1, :] .= true
+    mktempdir() do dir
+        write(joinpath(dir, "a.bin"), densebytes(long[:, :, 1:250]))
+        write(joinpath(dir, "b.bin"), densebytes(long[:, :, 251:600]))
+        files = readdir(dir, join=true)
+        frames = first(SP2TExtra.readdense(files, 16, 3, 300, (1, 1, 1), (16, 3, 600)))
+        @test frames[1, 1, :] == [300, 300]
+        @test frames == summed(long, 300)
+        # an aligned region (x from 9, 8 wide) equals the same pixels read bit by bit, in an
+        # unaligned region (x from 8, 10 wide)
+        for chunkbytes in (6, 2^20)
+            aligned = first(SP2TExtra.readdense(files, 16, 3, 7, (9, 2, 3), (8, 2, 590); chunkbytes))
+            unaligned = first(SP2TExtra.readdense(files, 16, 3, 7, (8, 2, 3), (10, 2, 590); chunkbytes))
+            @test aligned == unaligned[2:9, :, :] == summed(long[9:16, 2:3, 3:592], 7)
+        end
+    end
 end
 
 # The MSD is per coordinate, as in SP2T (2·D·period): particle p steps ±s[p] along every

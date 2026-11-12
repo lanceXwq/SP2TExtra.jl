@@ -32,8 +32,10 @@ end
 Internal: the batched frames of the region of dense `files` and its number of binary
 frames (`roisize[3]`, or `nothing` for the rest of the recording), in one pass. Each file
 is read about `chunkbytes` at a time, in blocks of whole frames that are also whole bytes,
-and each region pixel's bit (most significant first) is added to its batch. Files and
-frames outside the region are skipped.
+and each region pixel's bit (most significant first) is added to its batch. When the
+region's rows are whole bytes (`width`, `x - 1` and the region's width multiples of 8),
+whole bytes are added at once, 8 pixels per operation. Files and frames outside the region
+are skipped.
 """
 function readdense(files, width, height, batchsize, roiorigin, roisize; chunkbytes=2^20)
     framesize = width * height
@@ -51,23 +53,27 @@ function readdense(files, width, height, batchsize, roiorigin, roisize; chunkbyt
     frames = zeros(UInt16, roisize[1], roisize[2], cld(nframes, batchsize))
     unit = 8 ÷ gcd(framesize, 8) # frames in the smallest block of whole bytes
     buffer = Vector{UInt8}(undef, unit * max(1, chunkbytes * 8 ÷ (framesize * unit)) * framesize ÷ 8)
+    wholebytes = width % 8 == 0 && (x0 - 1) % 8 == 0 && roisize[1] % 8 == 0
+    counts = zeros(UInt64, wholebytes ? roisize[1] * roisize[2] ÷ 8 : 0)
     before = 0 # frames in the files already passed
     @showprogress dt = 3 desc = "Reading binary image data" for (file, n) in zip(files, n_frames_per_file)
         first, last = max(1, f0 - before), min(n, lastframe - before) # this file's frames in the region
-        first <= last && adddense!(frames, buffer, file, first, last, before - f0 + 1, width,
-            framesize, x0, y0, batchsize, unit)
+        first <= last && adddense!(frames, counts, wholebytes, buffer, file, first, last,
+            before - f0 + 1, width, framesize, x0, y0, batchsize, unit)
         before += n
     end
     return frames, nframes
 end
 
 # Add the bits of frames first to last of a dense file to their batches of frames (frame f
-# of the file is frame f + shift of the region), reading blocks of frames into buffer.
-function adddense!(frames, buffer, file, first, last, shift, width, framesize, x0, y0,
-    batchsize, unit)
-    rw, rh = size(frames, 1), size(frames, 2)
+# of the file is frame f + shift of the region), reading blocks of frames into buffer. With
+# wholebytes, a frame's bits go first to counts, 8 one-byte counters per UInt64, which are
+# added to the batch every 255 frames, at the batch's end and at the file's end.
+function adddense!(frames, counts, wholebytes, buffer, file, first, last, shift, width,
+    framesize, x0, y0, batchsize, unit)
     perchunk = length(buffer) * 8 ÷ framesize # a multiple of unit
     frame = (first - 1) ÷ unit * unit # frames skipped, a whole number of bytes
+    incounts = 0 # frames in counts
     io = open(file)
     try
         seek(io, frame * framesize ÷ 8)
@@ -77,14 +83,18 @@ function adddense!(frames, buffer, file, first, last, shift, width, framesize, x
             for m in 1:n
                 f = frame + m # the frame of the file
                 f < first && continue
-                batch = view(frames, :, :, (f + shift - 1) ÷ batchsize + 1)
-                base = (m - 1) * framesize + x0 - 1 # the frame's first bit, at x0
-                @inbounds for j in 1:rh
-                    row = base + (y0 + j - 2) * width
-                    for i in 1:rw
-                        b = row + i - 1
-                        batch[i, j] += (buffer[b>>3+1] >> (7 - (b & 7))) & 0x01
+                r = f + shift # the frame of the region
+                batch = view(frames, :, :, (r - 1) ÷ batchsize + 1)
+                if wholebytes
+                    addbytes!(counts, buffer, ((m - 1) * framesize + x0 - 1) ÷ 8, width ÷ 8,
+                        size(frames, 1) ÷ 8, y0)
+                    incounts += 1
+                    if incounts == 255 || r % batchsize == 0 || f == last
+                        flushcounts!(batch, counts)
+                        incounts = 0
                     end
+                else
+                    addbits!(batch, buffer, (m - 1) * framesize + x0 - 1, width, y0)
                 end
             end
             frame += n
@@ -93,6 +103,51 @@ function adddense!(frames, buffer, file, first, last, shift, width, framesize, x
         close(io)
     end
     return frames
+end
+
+# Add a frame's region to batch bit by bit; the region's first bit is bit `base` (0-based)
+# of buffer.
+function addbits!(batch, buffer, base, width, y0)
+    @inbounds for j in axes(batch, 2)
+        row = base + (y0 + j - 2) * width
+        for i in axes(batch, 1)
+            b = row + i - 1
+            batch[i, j] += (buffer[b>>3+1] >> (7 - (b & 7))) & 0x01
+        end
+    end
+    return batch
+end
+
+# Add a frame's region to counts byte by byte, 8 pixels at once; the region's first byte is
+# byte `base` (0-based) of buffer, and its rows are `rowbytes` bytes long.
+function addbytes!(counts, buffer, base, widthbytes, rowbytes, y0)
+    @inbounds for j in 1:length(counts)÷rowbytes
+        row = base + (y0 + j - 2) * widthbytes
+        c = (j - 1) * rowbytes
+        @simd for q in 1:rowbytes
+            counts[c+q] += spreadbits(buffer[row+q])
+        end
+    end
+    return counts
+end
+
+# A byte's 8 bits, most significant first, as the 8 bytes of a UInt64 (the first bit in the
+# lowest byte), each 0 or 1.
+function spreadbits(b::UInt8)
+    x = (b * 0x0101010101010101) & 0x0102040810204080 # byte l keeps bit 7 - l
+    return ((x + 0x7f7f7f7f7f7f7f7f) >> 7) & 0x0101010101010101 # nonzero bytes to 1
+end
+
+# Add the one-byte counters to batch, pixel by pixel, and zero them.
+function flushcounts!(batch, counts)
+    @inbounds for w in eachindex(counts)
+        x = counts[w]
+        for l in 0:7
+            batch[8(w-1)+l+1] += (x >> (8l)) % UInt8
+        end
+        counts[w] = 0
+    end
+    return batch
 end
 
 # ============================================================================

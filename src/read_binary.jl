@@ -120,13 +120,6 @@ function checkpath(path)
     return files
 end
 
-function printfilelist(files::AbstractVector)
-    println("Found the following binary file(s):")
-    for f in files
-        println(f)
-    end
-end
-
 # ============================================================================
 # DENSE FORMAT - Bit Unpacking & Reading
 # ============================================================================
@@ -408,8 +401,12 @@ function readbin(
     crop_width::Union{Integer,Nothing}=nothing,
     crop_height::Union{Integer,Nothing}=nothing,
 )
+    format in (:dense, :sparse) || throw(ArgumentError("format must be :dense or :sparse"))
+    format == :sparse && !all(isnothing, (crop_origin, crop_width, crop_height)) && throw(
+        ArgumentError("Cropping while reading applies to dense files only; crop sparse indices with `extractROI`."),
+    )
     files = checkpath(path)
-    printfilelist(files)
+    @info "Reading $(length(files)) .bin file(s) from $path"
 
     if format == :dense
         return readbin_dense_directory(
@@ -421,14 +418,8 @@ function readbin(
             crop_width=something(crop_width, width),
             crop_height=something(crop_height, height),
         )
-    elseif format == :sparse
-        all(isnothing, (crop_origin, crop_width, crop_height)) || throw(
-            ArgumentError("Cropping while reading applies to dense files only; crop sparse indices with `extractROI`."),
-        )
-        @time signals = _readbin(files)
-        @time return signal2indices!(signals, width * height)
     else
-        throw(ArgumentError("format must be :dense or :sparse"))
+        return signal2indices!(_readbin(files), width * height)
     end
 end
 
@@ -466,7 +457,6 @@ Write frame array to TIFF file with metadata.
 """
 function write_frames_to_tiff(fname, frames; pixel_size=0.1, unit="um", period=1e-5)
     frames = convert(Array{UInt16,3}, frames)
-    println(size(frames))
     writetiff(fname, frames, px_size=pixel_size, unit=unit, period=period)
 end
 

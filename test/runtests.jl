@@ -1,6 +1,15 @@
 using SP2TExtra
 using Test
 
+# The result of f() and what it printed to stdout.
+function captured(f)
+    mktemp() do path, io
+        result = redirect_stdout(f, io)
+        flush(io)
+        return result, read(path, String)
+    end
+end
+
 @testset "XML tests" begin
     gttracks = [0.15367499430949305 0.22010250918040386 0.0;
         0.3161351020914415 0.27006612153286086 0.0;
@@ -133,10 +142,14 @@ end
     mktempdir() do dir
         write(joinpath(dir, "terminated.bin"), signals)
         write(joinpath(dir, "unterminated.bin"), signals[1:end-1])
-        redirect_stdout(devnull) do
-            @test toframes(readbin(joinpath(dir, "terminated.bin"), width=w, height=h)) == frames
-            @test toframes(@test_logs warning readbin(joinpath(dir, "unterminated.bin"), width=w, height=h)) == frames
+        # readbin prints nothing; it logs one line
+        info = (:info, r"Reading 1 \.bin file\(s\) from .*terminated\.bin")
+        indices, output = captured() do
+            @test_logs info readbin(joinpath(dir, "terminated.bin"), width=w, height=h)
         end
+        @test toframes(indices) == frames
+        @test isempty(output)
+        @test toframes(@test_logs info warning readbin(joinpath(dir, "unterminated.bin"), width=w, height=h)) == frames
     end
 end
 
@@ -178,18 +191,20 @@ end
     mktempdir() do dir
         write(joinpath(dir, "1.bin"), pack(bits[:, :, 1:6]))
         write(joinpath(dir, "2.bin"), pack(bits[:, :, 7:10]))
-        redirect_stdout(devnull) do
-            read(; kwargs...) = readbin(dir; format=:dense, width=w, height=h, kwargs...)
-            @test read(batchsize=1) == summed(bits, 1)
-            @test read(batchsize=5) == summed(bits, 5)
-            @test (@test_logs (:warn, r"only contains 2 frames") read(batchsize=4)) == summed(bits, 4)
-            @test read(batchsize=5, crop_origin=(3, 2), crop_width=4, crop_height=2) ==
-                  summed(bits[3:6, 2:3, :], 5)
-            @test_throws ArgumentError read(batchsize=5, crop_origin=(6, 1), crop_width=4)
-            @test_logs (:warn, r"Expected 6 frames") SP2TExtra.readbin_dense_directory(
-                dir; width=w, height=h, batchsize=5, frames_per_file=6)
-            @test_throws ArgumentError readbin(dir; width=w, height=h, crop_width=4)
-        end
+        read(; kwargs...) = readbin(dir; format=:dense, width=w, height=h, kwargs...)
+        info = (:info, r"Reading 2 \.bin file\(s\)")
+        binned, output = captured(() -> @test_logs info read(batchsize=1))
+        @test binned == summed(bits, 1)
+        @test isempty(output)
+        @test (@test_logs info read(batchsize=5)) == summed(bits, 5)
+        @test (@test_logs info (:warn, r"only contains 2 frames") read(batchsize=4)) == summed(bits, 4)
+        @test (@test_logs info read(batchsize=5, crop_origin=(3, 2), crop_width=4, crop_height=2)) ==
+              summed(bits[3:6, 2:3, :], 5)
+        @test_logs info @test_throws ArgumentError read(batchsize=5, crop_origin=(6, 1), crop_width=4)
+        @test_logs (:warn, r"Expected 6 frames") SP2TExtra.readbin_dense_directory(
+            dir; width=w, height=h, batchsize=5, frames_per_file=6)
+        # an invalid call fails before logging anything
+        @test_logs @test_throws ArgumentError readbin(dir; width=w, height=h, crop_width=4)
     end
 end
 
@@ -253,6 +268,13 @@ end
 
         writetiff(path, frames; px_size=0.065)
         @test isapprox(readtiff(path)[2]["pixel size"], 0.065; rtol=1e-4)
+
+        # write_frames_to_tiff converts to UInt16 and prints nothing
+        ~, output = captured(() -> SP2TExtra.write_frames_to_tiff(path, Int.(frames); pixel_size=0.2))
+        @test isempty(output)
+        readouts, metadata = readtiff(path)
+        @test readouts == frames
+        @test metadata["pixel size"] == 0.2
     end
 end
 

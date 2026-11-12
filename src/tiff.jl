@@ -10,15 +10,16 @@ function getbits(ifds::AbstractVector{<:TiffImages.IFD})
     return bits[1]
 end
 
+# TIFF stores the resolution, in pixels per unit; the pixel size is its inverse.
 function getpixelsize(ifds::AbstractVector{<:TiffImages.IFD})
-    pixelsizex = [ifd[TiffImages.XRESOLUTION].data for ifd in ifds]
-    pixelsizey = [ifd[TiffImages.YRESOLUTION].data for ifd in ifds]
-    if length(unique(pixelsizex)) > 1 || length(unique(pixelsizey)) > 1
+    resolutionx = [ifd[TiffImages.XRESOLUTION].data for ifd in ifds]
+    resolutiony = [ifd[TiffImages.YRESOLUTION].data for ifd in ifds]
+    if length(unique(resolutionx)) > 1 || length(unique(resolutiony)) > 1
         throw(DomainError("The pixel size of the frames is not consistent."))
-    elseif pixelsizex[1] != pixelsizey[1]
+    elseif resolutionx[1] != resolutiony[1]
         throw(DomainError("The pixel size of the frames is not isotropic."))
     end
-    return float(pixelsizex[1])
+    return 1 / float(resolutionx[1])
 end
 
 parsestring(str::AbstractString) = unescape_string(split(str, "=")[2])

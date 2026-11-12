@@ -175,3 +175,22 @@ end
     @test_throws ArgumentError tamsd(x; lags=0:2)
     @test_throws ArgumentError tamsd(x; lags=[12])
 end
+
+# A TIFF written by writetiff reads back the same: frames, period, unit and pixel size. TIFF
+# stores the resolution (pixels per unit, rounded by writetiff to 3 decimals), so the pixel
+# size comes back exactly for 0.1 and within that rounding for 0.065.
+@testset "TIFF tests" begin
+    frames = UInt16[(i + 3j + 7k) % 9 for i in 1:6, j in 1:4, k in 1:3]
+    mktempdir() do dir
+        path = joinpath(dir, "frames.tif")
+        writetiff(path, frames; px_size=0.1, unit="nm", period=0.01)
+        readouts, metadata = readtiff(path)
+        @test readouts == frames
+        @test metadata["pixel size"] == 0.1
+        @test metadata["period"] == 0.01
+        @test metadata["unit"] == "nm"
+
+        writetiff(path, frames; px_size=0.065)
+        @test isapprox(readtiff(path)[2]["pixel size"], 0.065; rtol=1e-4)
+    end
+end

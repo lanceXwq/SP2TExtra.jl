@@ -23,26 +23,19 @@ function checkpath(path)
 end
 
 # ============================================================================
-# DENSE FORMAT - Bit Unpacking & Reading
+# DENSE FORMAT - Reading bits into frames in one pass
 # ============================================================================
 
-const BYTE_TO_BITS_MSB = [
-    ((UInt8(byte) >> UInt8(bitpos)) & 0x01) == 0x01
-    for bitpos in 7:-1:0, byte in 0:255
-]
-
-function readbin_dense_one_file(file_path; width=512, height=512)
-    reshape(BYTE_TO_BITS_MSB[:, read(file_path).+1], width, height, :)
-end
-
 """
-    readdense(files, width, height, batchsize, roiorigin, roisize)
+    readdense(files, width, height, batchsize, roiorigin, roisize; chunkbytes = 2^20)
 
 Internal: the batched frames of the region of dense `files` and its number of binary
-frames (`roisize[3]`, or `nothing` for the rest of the recording). Files before the region
-are skipped, and reading stops after it.
+frames (`roisize[3]`, or `nothing` for the rest of the recording), in one pass. Each file
+is read about `chunkbytes` at a time, in blocks of whole frames that are also whole bytes,
+and each region pixel's bit (most significant first) is added to its batch. Files and
+frames outside the region are skipped.
 """
-function readdense(files, width, height, batchsize, roiorigin, roisize)
+function readdense(files, width, height, batchsize, roiorigin, roisize; chunkbytes=2^20)
     framesize = width * height
     file_sizes_in_bits = filesize.(files) * 8
     n_frames_per_file = file_sizes_in_bits .÷ framesize
@@ -54,21 +47,52 @@ function readdense(files, width, height, batchsize, roiorigin, roisize)
     lastframe = f0 + nframes - 1
     (nframes >= 1 && lastframe <= sum(n_frames_per_file)) || throw(ArgumentError(
         "The region's frames ($f0 to $lastframe) are not all in the recording's $(sum(n_frames_per_file)) frames."))
-    xs, ys = x0:x0+roisize[1]-1, y0:y0+roisize[2]-1
 
     frames = zeros(UInt16, roisize[1], roisize[2], cld(nframes, batchsize))
+    unit = 8 ÷ gcd(framesize, 8) # frames in the smallest block of whole bytes
+    buffer = Vector{UInt8}(undef, unit * max(1, chunkbytes * 8 ÷ (framesize * unit)) * framesize ÷ 8)
     before = 0 # frames in the files already passed
     @showprogress dt = 3 desc = "Reading binary image data" for (file, n) in zip(files, n_frames_per_file)
-        if before + n >= f0 && before < lastframe
-            data = readbin_dense_one_file(file; width=width, height=height)
-            for k in max(1, f0 - before):min(n, lastframe - before)
-                batch = (before + k - f0) ÷ batchsize + 1
-                @views frames[:, :, batch] .+= data[xs, ys, k]
-            end
-        end
+        first, last = max(1, f0 - before), min(n, lastframe - before) # this file's frames in the region
+        first <= last && adddense!(frames, buffer, file, first, last, before - f0 + 1, width,
+            framesize, x0, y0, batchsize, unit)
         before += n
     end
     return frames, nframes
+end
+
+# Add the bits of frames first to last of a dense file to their batches of frames (frame f
+# of the file is frame f + shift of the region), reading blocks of frames into buffer.
+function adddense!(frames, buffer, file, first, last, shift, width, framesize, x0, y0,
+    batchsize, unit)
+    rw, rh = size(frames, 1), size(frames, 2)
+    perchunk = length(buffer) * 8 ÷ framesize # a multiple of unit
+    frame = (first - 1) ÷ unit * unit # frames skipped, a whole number of bytes
+    io = open(file)
+    try
+        seek(io, frame * framesize ÷ 8)
+        while frame < last
+            n = min(perchunk, last - frame)
+            read!(io, view(buffer, 1:cld(n * framesize, 8)))
+            for m in 1:n
+                f = frame + m # the frame of the file
+                f < first && continue
+                batch = view(frames, :, :, (f + shift - 1) ÷ batchsize + 1)
+                base = (m - 1) * framesize + x0 - 1 # the frame's first bit, at x0
+                @inbounds for j in 1:rh
+                    row = base + (y0 + j - 2) * width
+                    for i in 1:rw
+                        b = row + i - 1
+                        batch[i, j] += (buffer[b>>3+1] >> (7 - (b & 7))) & 0x01
+                    end
+                end
+            end
+            frame += n
+        end
+    finally
+        close(io)
+    end
+    return frames
 end
 
 # ============================================================================

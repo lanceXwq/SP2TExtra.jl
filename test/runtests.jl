@@ -192,7 +192,9 @@ end
     end
 end
 
-# Dense specifics: each file holds whole frames, of any size.
+# Dense specifics: each file holds whole frames, of any size, also frames that are not a
+# whole number of bytes; the files are read in blocks of frames, and any block size gives
+# the same frames.
 @testset "Dense binary tests" begin
     w, h = 8, 4
     binary = BitArray(isodd(i * j + k) && (i + 2j + 3k) % 5 != 0 for i in 1:w, j in 1:h, k in 1:10)
@@ -213,6 +215,25 @@ end
               summed(binary[:, :, 5:8], 4)
         write(joinpath(dir, "3.bin"), densebytes(binary[:, :, 1])[1:2]) # half a frame
         @test_logs (:info, r"Reading 3") @test_throws ArgumentError read(batchsize=1)
+    end
+
+    # 5 × 3 frames are 15 bits, so frames straddle bytes; 16 frames are 30 bytes
+    small = BitArray(isodd(i * j + k) && (i + j + 2k) % 3 != 0 for i in 1:5, j in 1:3, k in 1:16)
+    mktempdir() do dir
+        file = joinpath(dir, "small.bin")
+        write(file, densebytes(small))
+        @test (@test_logs (:info,) readbin(file; format=:dense, width=5, height=3, batchsize=1)) ==
+              summed(small, 1)
+        # regions from the first frame and from mid-file (frame 10 is in the second block
+        # of 8 frames, the smallest whole number of bytes), in blocks of 8 and 16 frames
+        for (origin, size) in (((2, 2, 1), (3, 2, 16)), ((1, 2, 10), (4, 2, 6)), ((5, 3, 4), (1, 1, 9)))
+            expected = summed(small[origin[1]:origin[1]+size[1]-1, origin[2]:origin[2]+size[2]-1,
+                origin[3]:origin[3]+size[3]-1], 3)
+            for chunkbytes in (1, 15, 30, 2^20)
+                @test first(SP2TExtra.readdense([file], 5, 3, 3, origin, size; chunkbytes)) ==
+                      expected
+            end
+        end
     end
 end
 

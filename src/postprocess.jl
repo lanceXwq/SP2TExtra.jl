@@ -56,37 +56,35 @@ function credible2D(S::AbstractVector{<:Sample}, xedges::AbstractRange, yedges::
     counts ./= ntracks
 end
 
-function _msds!(msds::AbstractVector{T}, tracks::AbstractArray{T,3}) where {T<:Real}
-    nframes, ndims = size(tracks, 1), size(tracks, 2)
-    copyto!(msds, sum(diff(tracks, dims=1) .^ 2, dims=(1, 2)) ./ ((nframes - 1) * ndims))
-    return msds
-end
-function _msds(tracks::AbstractArray{T,3}) where {T<:Real}
-    msds = similar(tracks, size(tracks, 3))
-    _msds!(msds, tracks)
-    return msds
-end
-function msds(tracks::AbstractArray{T,3}, delay::Integer) where {T<:Real}
-    if delay == 1
-        return _msds(tracks)
-    else
-        m = fill!(similar(tracks, size(tracks, 3)), 0)
-        for start in 1:size(tracks, 1)-delay
-            t = @view tracks[start:delay:end, :, :]
-            m .+= _msds(t)
-        end
-        return m ./ (size(tracks, 1) - delay)
-    end
-end
-function msds(tracks::AbstractArray{T,3}) where {T<:Real}
-    m = similar(tracks, size(tracks, 1) - 1, size(tracks, 3))
-    for delay in 1:size(tracks, 1)-1
-        m[delay, :] = msds(tracks, delay)
+"""
+    tamsd(tracks; lags = 1:size(tracks, 1)-1)
+
+Time-averaged mean squared displacement of each particle in `tracks`
+(`(nframes, ndims, nparticles)`), as a `length(lags)` × `nparticles` matrix. The entry
+for lag `L` averages `(x[t+L] - x[t])²` over every frame `t` and every coordinate, so it is
+per coordinate like SP2T's MSD: for free diffusion it is about `L` times the one-frame MSD.
+"""
+function tamsd(tracks::AbstractArray{<:Real,3}; lags=1:size(tracks, 1)-1)
+    nframes, ndims, nparticles = size(tracks)
+    all(in(1:nframes-1), lags) ||
+        throw(ArgumentError("lags must lie in 1:$(nframes - 1) for $nframes frames."))
+    m = similar(tracks, float(eltype(tracks)), length(lags), nparticles)
+    for (i, L) in enumerate(lags)
+        Δ = @views tracks[1+L:end, :, :] .- tracks[1:end-L, :, :]
+        m[i, :] .= vec(sum(abs2, Δ; dims=(1, 2))) ./ ((nframes - L) * ndims)
     end
     return m
 end
 
-msd(tracks::AbstractArray{<:Real,3}) = mean(msds(tracks, 1))
+"""
+    msd(tracks)
+
+Mean squared displacement between consecutive frames, averaged over frames, coordinates and
+particles of `tracks` (`(nframes, ndims, nparticles)`): the per-coordinate MSD that SP2T
+samples (`2·D·period`). For the sampled tracks of a chain, use `msd(tracks(chain))`; the
+sampled MSDs themselves are `chain.msds`.
+"""
+msd(tracks::AbstractArray{<:Real,3}) = mean(abs2, diff(tracks; dims=1))
 
 function tracks(chain::Chain{T}; burn_in::Integer=0) where {T<:Real}
     N = sum(chain.emittercounts[burn_in+1:end])

@@ -151,13 +151,27 @@ end
 
 # The MSD is per coordinate, as in SP2T (2·D·period): particle p steps ±s[p] along every
 # coordinate in every frame, so its one-frame MSD is s[p]², whatever the number of
-# coordinates.
+# coordinates. With steps of constant sign, the displacement over L frames is L·s[p], so the
+# time-averaged MSD at lag L is L²·s[p]². On irregular tracks, tamsd matches a direct
+# average over all pairs of frames L apart.
 @testset "MSD tests" begin
     s = [0.5, 1.0, 2.0]
     for ndims in (2, 3)
         steps = [(-1)^(t + d) * s[p] for t in 1:9, d in 1:ndims, p in 1:3]
         x = cumsum(cat(zeros(1, ndims, 3), steps; dims=1); dims=1)
-        @test msds(x, 1) ≈ s .^ 2
+        @test vec(tamsd(x; lags=1)) ≈ s .^ 2
         @test msd(x) ≈ sum(s .^ 2) / 3
+
+        steps = [(-1)^d * s[p] for t in 1:9, d in 1:ndims, p in 1:3]
+        x = cumsum(cat(zeros(1, ndims, 3), steps; dims=1); dims=1)
+        @test tamsd(x) ≈ [L^2 * s[p]^2 for L in 1:9, p in 1:3]
+        @test tamsd(x; lags=[5, 2]) ≈ [L^2 * s[p]^2 for L in [5, 2], p in 1:3]
     end
+
+    x = [sin(t * d + p) + t^2 / 7 for t in 1:12, d in 1:2, p in 1:3]
+    direct(L, p) = sum((x[t+L, d, p] - x[t, d, p])^2 for t in 1:12-L, d in 1:2) / (2 * (12 - L))
+    @test tamsd(x) ≈ [direct(L, p) for L in 1:11, p in 1:3]
+    @test msd(x) ≈ sum(tamsd(x; lags=1)) / 3
+    @test_throws ArgumentError tamsd(x; lags=0:2)
+    @test_throws ArgumentError tamsd(x; lags=[12])
 end

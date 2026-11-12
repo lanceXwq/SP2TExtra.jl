@@ -57,7 +57,8 @@ function credible2D(S::AbstractVector{<:Sample}, xedges::AbstractRange, yedges::
 end
 
 function _msds!(msds::AbstractVector{T}, tracks::AbstractArray{T,3}) where {T<:Real}
-    copyto!(msds, sum(diff(tracks, dims=1) .^ 2, dims=(1, 2)) ./ (size(tracks, 1) - 1))
+    nframes, ndims = size(tracks, 1), size(tracks, 2)
+    copyto!(msds, sum(diff(tracks, dims=1) .^ 2, dims=(1, 2)) ./ ((nframes - 1) * ndims))
     return msds
 end
 function _msds(tracks::AbstractArray{T,3}) where {T<:Real}

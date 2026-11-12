@@ -149,7 +149,15 @@ end
     end
 end
 
-# @testset "MSD tests" begin
-#     x = randn(10, 5, 3)
-#     @test isapprox(msd(x), sum(diff(x, dims=1) .^ 2) / (3 * (10 - 1)))
-# end
+# The MSD is per coordinate, as in SP2T (2·D·period): particle p steps ±s[p] along every
+# coordinate in every frame, so its one-frame MSD is s[p]², whatever the number of
+# coordinates.
+@testset "MSD tests" begin
+    s = [0.5, 1.0, 2.0]
+    for ndims in (2, 3)
+        steps = [(-1)^(t + d) * s[p] for t in 1:9, d in 1:ndims, p in 1:3]
+        x = cumsum(cat(zeros(1, ndims, 3), steps; dims=1); dims=1)
+        @test msds(x, 1) ≈ s .^ 2
+        @test msd(x) ≈ sum(s .^ 2) / 3
+    end
+end

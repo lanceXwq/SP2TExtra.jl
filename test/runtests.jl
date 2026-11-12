@@ -150,6 +150,14 @@ end
         @test toframes(indices) == frames
         @test isempty(output)
         @test toframes(@test_logs info warning readbin(joinpath(dir, "unterminated.bin"), width=w, height=h)) == frames
+
+        # a recording split across files, in name order, reads as one stream, also when a
+        # frame starts in one file and ends in the next (signals[4] is frame 2's first click)
+        split = mkdir(joinpath(dir, "split"))
+        write(joinpath(split, "a.bin"), signals[1:4])
+        write(joinpath(split, "b.bin"), signals[5:end])
+        info = (:info, r"Reading 2 \.bin file\(s\)")
+        @test toframes(@test_logs info readbin(split, width=w, height=h)) == frames
     end
 end
 
@@ -252,6 +260,49 @@ end
     @test_throws ArgumentError localization_error(chain(μ .+ s, μ .- s); burn_in=2)
 end
 
+# tracks(chain; burn_in) concatenates, in order, the emitters of every sample after the
+# first burn_in, whatever their number.
+@testset "Chain tracks tests" begin
+    S = SP2TExtra.SP2T
+    sample(x) = S.Sample(x, 1.0, 1.0, 0, 1.0, NaN, NaN)
+    chain(xs...) = S.Chain([sample(x) for x in xs], 10, S.ConstantAnnealing{Float64}(1))
+    a, b, c = (reshape(Float64.(n .+ (1:6)), 3, 2, 1) for n in (0, 10, 20))
+    d = reshape(Float64.(31:36), 3, 2, 1)
+    @test tracks(chain(a, cat(b, c; dims=3), d)) == cat(a, b, c, d; dims=3)
+    @test tracks(chain(a, cat(b, c; dims=3), d); burn_in=1) == cat(b, c, d; dims=3)
+    @test size(tracks(chain(a, b); burn_in=2)) == (3, 2, 0)
+end
+
+# credible1D and credible2D give, for each frame, the fraction of sampled positions in each
+# bin: for one particle (i) or pooled over all. Two identical samples, two frames: particle 1
+# is at (0.5, 1.5) then (1.5, 2.5), particle 2 at (2.5, 0.5) in both; bins 0:1:3 on each
+# axis. credible2D's rows are x bins and its columns y bins.
+@testset "Credible region tests" begin
+    S = SP2TExtra.SP2T
+    positions = cat([0.5 1.5; 1.5 2.5], [2.5 0.5; 2.5 0.5]; dims=3) # (frame, x/y, particle)
+    samples = [S.Sample(positions, 1.0, 1.0, 0, 1.0, NaN, NaN) for _ in 1:2]
+    edges = 0:1:3
+
+    x, y = credible1D(samples, 1, edges, edges)
+    @test x == [1 0 0; 0 1 0]
+    @test y == [0 1 0; 0 0 1]
+    x, y = credible1D(samples, edges, edges)
+    @test x == [0.5 0 0.5; 0 0.5 0.5]
+    @test y == [0.5 0.5 0; 0.5 0 0.5]
+
+    onehot(i, j) = (h = zeros(3, 3); h[i, j] = 1; h)
+    c = credible2D(samples, 1, edges, edges)
+    @test c[:, :, 1] == onehot(1, 2) # x bin 1, y bin 2
+    @test c[:, :, 2] == onehot(2, 3)
+    c = credible2D(samples, edges, edges)
+    @test c[:, :, 1] == (onehot(1, 2) + onehot(3, 1)) / 2
+    @test c[:, :, 2] == (onehot(2, 3) + onehot(3, 1)) / 2
+
+    # factor and shift: positions are shifted, then scaled, before binning
+    x, ~ = credible1D(samples, 1, 0:2:6, edges; factor=2, xshift=0.5)
+    @test x == [1 0 0; 0 1 0] # 2·(0.5 + 0.5) = 2 and 2·(1.5 + 0.5) = 4
+end
+
 # A TIFF written by writetiff reads back the same: frames, period, unit and pixel size. TIFF
 # stores the resolution (pixels per unit, rounded by writetiff to 3 decimals), so the pixel
 # size comes back exactly for 0.1 and within that rounding for 0.065.
@@ -275,6 +326,37 @@ end
         readouts, metadata = readtiff(path)
         @test readouts == frames
         @test metadata["pixel size"] == 0.2
+    end
+end
+
+# read_stage_positions reads the Timestamp_ms, X_microns and Y_microns columns (in any order,
+# among others) of a stage CSV. By default times are seconds and positions microns, both
+# relative to the first row; blank lines are skipped.
+@testset "Stage position tests" begin
+    mktempdir() do dir
+        path = joinpath(dir, "stage.csv")
+        write(path, """
+            Y_microns, Other, Timestamp_ms, X_microns
+            20.0, a, 1000, 5.0
+            21.5, b, 1250, 4.0
+
+            19.0, c, 1500, 6.5
+            """)
+        t, x, y = SP2TExtra.read_stage_positions(path)
+        @test t ≈ [0, 0.25, 0.5]
+        @test x ≈ [0, -1, 1.5]
+        @test y ≈ [0, 1.5, -1]
+        t, x, y = SP2TExtra.read_stage_positions(path; relative_time=false,
+            relative_position=false, time_unit=:ms)
+        @test t == [1000, 1250, 1500]
+        @test x == [5, 4, 6.5]
+        @test y == [20, 21.5, 19]
+        @test_throws ErrorException SP2TExtra.read_stage_positions(path; time_unit=:min)
+
+        write(path, "Timestamp_ms,X_microns\n0,1\n")
+        @test_throws ErrorException SP2TExtra.read_stage_positions(path) # no Y_microns
+        write(path, "Timestamp_ms,X_microns,Y_microns\n0,1\n")
+        @test_throws ErrorException SP2TExtra.read_stage_positions(path) # short row
     end
 end
 

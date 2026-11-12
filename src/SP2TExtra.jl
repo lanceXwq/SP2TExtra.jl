@@ -9,6 +9,7 @@ export readbin, getframes, extractROI, readtiff, writetiff
 export getdarkcounts
 export credible1D, credible2D, msd, tamsd, tracks, localization_error
 export xml2tracks
+export viewframes
 
 include("histcounts.jl")
 include("binframes.jl")
@@ -17,5 +18,6 @@ include("preprocess.jl")
 include("postprocess.jl")
 include("trackmate.jl")
 include("tiff.jl")
+include("viewers.jl")
 
 end

@@ -418,3 +418,14 @@ end
 
     @test_throws ArgumentError getdarkcounts(darkframes)
 end
+
+@testset "Viewer tests" begin
+    @test isnothing(Base.get_extension(SP2TExtra, :SP2TExtraMakieExt))
+    @eval using CairoMakie
+    CairoMakie.activate!(visible = false) # display renders without opening a viewer
+    @test !isnothing(Base.get_extension(SP2TExtra, :SP2TExtraMakieExt))
+    frames = zeros(UInt16, 6, 4, 3)
+    frames[2, 3, 2] = 5
+    tracks = [0.1 0.2; 0.15 0.25; 0.2 0.3;;;]
+    @test isnothing(first(captured(() -> viewframes(frames; tracks, pxsize = 0.1))))
+end

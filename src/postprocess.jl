@@ -84,10 +84,8 @@ function msds(tracks::AbstractArray{T,3}) where {T<:Real}
     end
     return m
 end
-msds(chain::Chain; burn_in::Integer=0) = msds(tracks(chain; burn_in=burn_in))
 
 msd(tracks::AbstractArray{<:Real,3}) = mean(msds(tracks, 1))
-msd(chain::Chain; burn_in::Integer=0) = mean(msds(chain; burn_in=burn_in))
 
 function tracks(chain::Chain{T}; burn_in::Integer=0) where {T<:Real}
     N = sum(chain.emittercounts[burn_in+1:end])

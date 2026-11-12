@@ -186,7 +186,7 @@ function readbin_dense_directory(
     frames_in_batch = 0
     batch_accumulator = zeros(UInt16, crop_width, crop_height)
 
-    @showprogress 3 "Reading binary image data" for file in files
+    @showprogress dt = 3 desc = "Reading binary image data" for file in files
         frames = readbin_dense_one_file(file; width=width, height=height)
 
         !isnothing(frames_per_file) && size(frames, 3) != frames_per_file &&

@@ -1,6 +1,6 @@
 module SP2TExtra
 
-using SP2T, Combinatorics, StatsBase, TiffImages, MAT, ImageCore, Statistics
+using SP2T, StatsBase, TiffImages, ImageCore, Statistics
 using ProgressMeter: @showprogress
 using XMLDict
 

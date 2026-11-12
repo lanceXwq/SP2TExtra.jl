@@ -266,6 +266,19 @@ end
               [m + 10d + 100p for m in means, d in 1:2, p in 1:3]
         @test size(bintracks(x, batchsize), 1) == size(binned, 3)
     end
+
+    # binframes returns UInt16, SP2T's readout type, whatever the input type; batch sums
+    # must fit in it: 65535 passes, 65536 and negative sums throw.
+    for input in (trues(2, 2, 600), ones(UInt8, 2, 2, 600), ones(Int, 2, 2, 600))
+        binned = binframes(input, 300)
+        @test eltype(binned) == UInt16
+        @test binned == fill(300, 2, 2, 2)
+    end
+    @test binframes(fill(UInt8(65), 1, 1, 1008), 1008) == fill(65520, 1, 1, 1)
+    @test binframes([fill(UInt16(65535), 1, 1, 1);;; zeros(UInt16, 1, 1, 2)], 3) ==
+          fill(65535, 1, 1, 1)
+    @test_throws ArgumentError binframes([fill(UInt16(65535), 1, 1, 1);;; ones(UInt16, 1, 1, 2)], 3)
+    @test_throws ArgumentError binframes(fill(-1, 1, 1, 2), 2)
 end
 
 # A pixel that clicks in k of N binary frames has the dark count -log(1 - k/N): 4 frames of

@@ -9,11 +9,11 @@ function sumbin!(binned::AbstractArray{T,3}, tobin::AbstractArray{S,3}) where {T
     return binned
 end
 
+# Returns UInt16, the type of SP2T's readouts; the sums are taken in Int and checked.
 function binframes(frames::AbstractArray{T,3}, batchsize::Integer) where {T<:Integer}
-    S = maximum(frames) * batchsize > typemax(T) ? UInt16 : T
     width, height, nframes = size(frames)
     new_nframes = cld(nframes, batchsize)
-    binned = similar(frames, S, width, height, new_nframes)
+    binned = similar(frames, Int, width, height, new_nframes)
     n = nframes ÷ batchsize * batchsize
     if n == nframes
         sumbin!(binned, frames)
@@ -23,7 +23,11 @@ function binframes(frames::AbstractArray{T,3}, batchsize::Integer) where {T<:Int
         @views sumbin!(binned[:, :, 1:end-1], frames[:, :, 1:n])
         @views sum!(binned[:, :, end], frames[:, :, n+1:end])
     end
-    return binned
+    lo, hi = extrema(binned)
+    0 <= lo && hi <= typemax(UInt16) || throw(ArgumentError(
+        "Batch sums range from $lo to $hi, outside 0 to $(typemax(UInt16)), which SP2T's " *
+        "UInt16 readouts can hold: use a smaller batchsize."))
+    return convert(AbstractArray{UInt16}, binned)
 end
 
 # The mean position over each batch of frames, a partial last batch included, so the result

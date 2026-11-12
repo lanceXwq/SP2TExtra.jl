@@ -99,8 +99,21 @@ function tracks(chain::Chain{T}; burn_in::Integer=0) where {T<:Real}
     return x
 end
 
-#! Only works when one particle is present
-function localization_error(chain::Chain{T}; burn_in::Integer=0) where {T<:Real}
+"""
+    localization_error(chain; burn_in = 0)
+
+Localization uncertainty of a single emitter: the posterior standard deviation of its
+position per coordinate, as the root mean square over frames and coordinates,
+`sqrt(mean(var))`, the variance taken over the samples after the first `burn_in`. This is
+the σ in the offset `2σ²` of the per-coordinate MSD curve (`tamsd`). It measures the spread
+of the posterior, not the distance to a true position. Every sample after `burn_in` must
+have exactly one emitter.
+"""
+function localization_error(chain::Chain; burn_in::Integer=0)
+    counts = chain.emittercounts[burn_in+1:end]
+    !isempty(counts) && all(==(1), counts) || throw(ArgumentError(
+        "localization_error needs exactly one emitter in every sample after burn_in; " *
+        "the emitter counts there are $(sort(unique(counts)))."))
     x = tracks(chain; burn_in=burn_in)
-    mean(sqrt.(sum(var(x, dims=3), dims=2))) / 2
+    return sqrt(mean(var(x; dims=3, corrected=false)))
 end

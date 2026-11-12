@@ -211,6 +211,23 @@ end
     @test_throws ArgumentError tamsd(x; lags=[12])
 end
 
+# The localization error is the RMS over frames and coordinates of the per-coordinate
+# posterior standard deviation. Samples at μ ± s have the variance s² (over the samples
+# themselves), so the error is sqrt(mean(s²)). A sample far away is skipped as burn-in;
+# samples with other than one emitter are rejected.
+@testset "Localization error tests" begin
+    S = SP2TExtra.SP2T
+    sample(x) = S.Sample(x, 1.0, 1.0, 0, 1.0, NaN, NaN)
+    chain(xs...) = S.Chain([sample(x) for x in xs], 10, S.ConstantAnnealing{Float64}(1))
+    μ = reshape([1.0 2.0; 1.5 2.5; 2.0 3.0], 3, 2, 1)
+    s = reshape([0.1 0.2; 0.3 0.1; 0.2 0.4], 3, 2, 1)
+    far = fill(50.0, 3, 2, 1)
+    @test localization_error(chain(far, μ .+ s, μ .- s); burn_in=1) ≈ sqrt(sum(s .^ 2) / 6)
+    @test localization_error(chain(μ .+ s, μ .- s, μ .+ s, μ .- s)) ≈ sqrt(sum(s .^ 2) / 6)
+    @test_throws ArgumentError localization_error(chain(μ .+ s, cat(μ, μ .- s; dims=3)))
+    @test_throws ArgumentError localization_error(chain(μ .+ s, μ .- s); burn_in=2)
+end
+
 # A TIFF written by writetiff reads back the same: frames, period, unit and pixel size. TIFF
 # stores the resolution (pixels per unit, rounded by writetiff to 3 decimals), so the pixel
 # size comes back exactly for 0.1 and within that rounding for 0.065.

@@ -15,16 +15,13 @@ roisize = (45, 45, 20 * 255) # its width, height and number of frames
 batchsize = 255 # raw frames summed per frame; any value gives the same dark counts
 output = "darkcounts.jld2"
 
-indices = readbin(datapath; width = fullframe[1], height = fullframe[2])
-roiindices = extractROI(indices, fullframe, roiorigin, roisize)
-# nframes keeps the region's last frames even if they have no clicks: dropping them would
-# count too few frames and overestimate the dark counts
-darkframes = getframes(
-    roiindices;
-    width = roisize[1],
-    height = roisize[2],
+darkframes = readbin(
+    datapath;
+    width = fullframe[1],
+    height = fullframe[2],
     batchsize = batchsize,
-    nframes = roisize[3],
+    roiorigin = roiorigin,
+    roisize = roisize,
 )
 # Inf (with a warning) for a pixel that clicks in every frame; SP2T filters those out
 darkcounts = getdarkcounts(darkframes; batchsize = batchsize)

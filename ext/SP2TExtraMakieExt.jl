@@ -105,7 +105,7 @@ function SP2TExtra.viewframes(
     # @show rect[].orgin = 1
 
     # txts = @show @lift "($($(rect).origin[1] - 0.5), $($(rect).origin[2]+$(rect).widths[2]) )"
-    # the region's first pixel (x, y) and its size, as extractROI takes them
+    # the region's first pixel (x, y) and its size: readbin's roiorigin and roisize
     topleft_txt = @lift "($($(rect).origin[1] + 1), $($(rect).origin[2] + 1))"
     bottomright_txt = @lift "($($(rect).widths[1]), $($(rect).widths[2]))"
 

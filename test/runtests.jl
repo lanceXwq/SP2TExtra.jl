@@ -85,71 +85,96 @@ end
 
 # The binary readers are documented (a string inside a function body documents nothing).
 @testset "Docstring tests" begin
-    for name in (:readbin, :getframes, :readbin_dense_directory, :crop_frames,
-        :write_frames_to_tiff, :_readbin, :countsignals, :readsignals!, :signal2indices!,
-        :popdelimiters!, :shiftindices!, :_getframes)
+    for name in (:readbin, :readdense, :readsparse, :write_frames_to_tiff)
         @test Base.Docs.hasdoc(SP2TExtra, name)
     end
 end
 
-# A click at column i, row j of frame k has the linear index (k-1)·w·h + (j-1)·w + i.
-# Extracting a region of clicks must equal slicing the frames, also when the region is not
-# square. Every region below has a click in the last frame.
-@testset "ROI tests" begin
-    w, h = 5, 4
-    frames = zeros(UInt16, w, h, 3)
-    for (i, j, k) in ((2, 1, 1), (4, 3, 1), (3, 2, 2), (5, 4, 2), (2, 2, 3), (4, 3, 3))
-        frames[i, j, k] = 1
+# A recording of binary frames (w × h × n, Bool) in the two formats. Sparse lists each
+# frame's clicks (0-based pixel indices, Int32) and then a delimiter (the number of pixels);
+# dense stores one bit per pixel, most significant bit first, frame after frame.
+function sparsesignals(binary)
+    signals = Int32[]
+    for frame in eachslice(binary, dims=3)
+        append!(signals, findall(vec(frame)) .- 1)
+        push!(signals, length(frame))
     end
-    indices = findall(!iszero, vec(frames))
-    @test getframes(indices, width=w, height=h, batchsize=1) == frames
-    for (origin, range) in (((2, 1, 1), (4, 3, 3)), ((2, 2, 1), (3, 3, 3)), ((2, 1, 1), (3, 2, 3)))
-        expected = frames[origin[1]:origin[1]+range[1]-1, origin[2]:origin[2]+range[2]-1, :]
-        ROIindices = extractROI(indices, (w, h), origin, range)
-        @test getframes(ROIindices, width=range[1], height=range[2], batchsize=1) == expected
+    return signals
+end
+densebytes(binary) =
+    (b = vec(binary); [reduce(|, UInt8(b[8(n-1)+m]) << (8 - m) for m in 1:8) for n in 1:length(b)÷8])
+# the frames readbin should return: sums of s binary frames, the last batch possibly partial
+summed(binary, s) =
+    cat((sum(UInt16.(binary[:, :, k:min(k + s - 1, end)]), dims=3) for k in 1:s:size(binary, 3))..., dims=3)
+
+# Reading a region equals slicing the recording, in both formats, also for regions that are
+# not square or start and end mid-recording. The last two frames have no clicks and are
+# still read. A last partial batch is kept, with a warning.
+@testset "Region tests" begin
+    w, h, n = 8, 5, 12
+    binary = BitArray(isodd(i * j + k) && (i + 2j + 3k) % 5 != 0 for i in 1:w, j in 1:h, k in 1:n)
+    binary[:, :, 11:12] .= false
+    mktempdir() do dir
+        write(joinpath(dir, "sparse.bin"), sparsesignals(binary))
+        write(joinpath(dir, "dense.bin"), densebytes(binary))
+        for format in (:sparse, :dense)
+            read(; kwargs...) =
+                readbin(joinpath(dir, "$format.bin"); format, width=w, height=h, kwargs...)
+            info = (:info, r"Reading 1 \.bin file\(s\)")
+            @test (@test_logs info read(batchsize=1)) == summed(binary, 1)
+            for (origin, size, batchsize, expected) in (
+                ((3, 2, 1), (4, 3, 12), 3, binary[3:6, 2:4, :]),
+                ((2, 1, 4), (5, 5, 6), 3, binary[2:6, 1:5, 4:9]),
+                ((1, 3, 5), (8, 3), 4, binary[:, 3:5, 5:12]), # to the end of the recording
+                ((4, 4, 1), nothing, 6, binary[4:8, 4:5, :]), # to the edges of the frame
+                ((8, 5, 12), (1, 1, 1), 1, binary[8:8, 5:5, 12:12]),
+            )
+                @test (@test_logs info read(; roiorigin=origin, roisize=size, batchsize)) ==
+                      summed(expected, batchsize)
+            end
+            partial = (:warn, r"last batch sums 2 frames")
+            @test (@test_logs info partial read(batchsize=5)) == summed(binary, 5)
+            thresholded = summed(binary, 12)
+            thresholded[thresholded.>3] .= 0
+            @test (@test_logs info read(batchsize=12, threshold=3)) == thresholded
+
+            # a region outside the frame fails before logging, one outside the recording
+            # once it is read
+            @test_logs @test_throws ArgumentError read(roiorigin=(5, 1, 1), roisize=(5, 5, 1))
+            @test_logs @test_throws ArgumentError read(roiorigin=(0, 1, 1))
+            @test_logs @test_throws ArgumentError read(batchsize=0)
+            @test_logs @test_throws ArgumentError read(batchsize=65536)
+            @test_logs info @test_throws ArgumentError read(roiorigin=(1, 1, 10), roisize=(8, 5, 4))
+            @test_logs info @test_throws ArgumentError read(roiorigin=(1, 1, 13))
+        end
     end
-    # the single-click and matrix methods agree with the definition
-    cartesian = [2 1 1; 4 3 1; 3 2 2; 5 4 2; 2 2 3; 4 3 3]
-    @test SP2TExtra.linearize(cartesian, w, h) == indices
-    @test [SP2TExtra.linearize(c, w, h) for c in eachrow(cartesian)] == indices
-    @test SP2TExtra.cartesianize(indices, w, w * h) == cartesian
 end
 
-# The sparse format lists each frame's clicks (0-based pixel indices, Int32) followed by a
-# delimiter (the number of pixels). A recording that stops mid-frame has no delimiter after
-# its last clicks: they are kept as a last frame, with a warning.
+# Sparse specifics: frames may continue in the next file; clicks after the last delimiter
+# are kept as a last frame, with a warning; malformed files are rejected.
 @testset "Sparse binary tests" begin
     w, h = 5, 4
-    frames = zeros(UInt16, w, h, 3)
+    binary = falses(w, h, 3)
     for (i, j, k) in ((2, 1, 1), (4, 3, 1), (3, 2, 2), (5, 4, 2), (2, 2, 3), (4, 3, 3))
-        frames[i, j, k] = 1
+        binary[i, j, k] = true
     end
-    signals = Int32[]
-    for k in 1:3
-        append!(signals, findall(!iszero, vec(frames[:, :, k])) .- 1)
-        push!(signals, w * h)
-    end
-    toframes(indices) = getframes(indices, width=w, height=h, batchsize=1)
-    toindices(signals) = SP2TExtra.signal2indices!(signals .+ Int32(1), w * h)
-
-    @test toframes(@test_logs toindices(signals)) == frames
-    warning = (:warn, r"not a frame delimiter")
-    @test toframes(@test_logs warning toindices(signals[1:end-1])) == frames
-    # no delimiter at all: one frame
-    @test toframes(@test_logs warning toindices(signals[1:2])) == frames[:, :, 1:1]
-    @test isempty(@test_logs toindices(Int32[]))
-
+    frames = summed(binary, 1)
+    signals = sparsesignals(binary)
     mktempdir() do dir
-        write(joinpath(dir, "terminated.bin"), signals)
-        write(joinpath(dir, "unterminated.bin"), signals[1:end-1])
+        file(name, values) = (path = joinpath(dir, name); write(path, values); path)
+        read(path; kwargs...) = readbin(path; width=w, height=h, batchsize=1, kwargs...)
         # readbin prints nothing; it logs one line
         info = (:info, r"Reading 1 \.bin file\(s\) from .*terminated\.bin")
-        indices, output = captured() do
-            @test_logs info readbin(joinpath(dir, "terminated.bin"), width=w, height=h)
-        end
-        @test toframes(indices) == frames
+        result, output = captured(() -> @test_logs info read(file("terminated.bin", signals)))
+        @test result == frames
         @test isempty(output)
-        @test toframes(@test_logs info warning readbin(joinpath(dir, "unterminated.bin"), width=w, height=h)) == frames
+        warning = (:warn, r"not a frame delimiter")
+        @test (@test_logs info warning read(file("unterminated.bin", signals[1:end-1]))) == frames
+        # no delimiter at all: one frame
+        @test (@test_logs (:info,) warning read(file("one.bin", signals[1:2]))) == frames[:, :, 1:1]
+        @test_logs (:info,) @test_throws ArgumentError read(file("empty.bin", Int32[]))
+        @test_logs (:info,) @test_throws DomainError read(file("partial.bin", UInt8[1, 2, 3]))
+        @test_logs (:info,) @test_throws ArgumentError read(file("negative.bin", Int32[1, -1, 20]))
 
         # a recording split across files, in name order, reads as one stream, also when a
         # frame starts in one file and ends in the next (signals[4] is frame 2's first click)
@@ -157,62 +182,37 @@ end
         write(joinpath(split, "a.bin"), signals[1:4])
         write(joinpath(split, "b.bin"), signals[5:end])
         info = (:info, r"Reading 2 \.bin file\(s\)")
-        @test toframes(@test_logs info readbin(split, width=w, height=h)) == frames
+        @test (@test_logs info read(split)) == frames
+        @test (@test_logs info read(split; roiorigin=(1, 1, 2), roisize=(5, 4, 1))) == frames[:, :, 2:2]
+        # the files are read in chunks; any chunk size gives the same frames
+        for chunk in 1:4
+            @test first(SP2TExtra.readsparse(readdir(split, join=true), w, h, 1, (1, 1, 1),
+                (w, h, nothing); chunk)) == frames
+        end
     end
 end
 
-# getframes with batches: a batch sums batchsize raw frames, and a last partial batch is kept
-# (with a warning). Without nframes the frames end at the last click; with it, trailing
-# frames without clicks are kept.
-@testset "Batching tests" begin
-    w, h = 3, 2
-    frames = zeros(UInt16, w, h, 5)
-    for (i, j, k) in ((1, 1, 1), (3, 2, 1), (2, 1, 2), (1, 1, 3), (3, 1, 3))
-        frames[i, j, k] = 1
-    end # frames 4 and 5 have no clicks
-    indices = findall(!iszero, vec(frames))
-    batched(b) = cat((sum(frames[:, :, k:min(k + b - 1, 5)], dims=3) for k in 1:b:5)..., dims=3)
-
-    @test getframes(indices, width=w, height=h, batchsize=1) == frames[:, :, 1:3]
-    @test getframes(indices, width=w, height=h, batchsize=1, nframes=5) == frames
-    @test getframes(indices, width=w, height=h, batchsize=5, nframes=5) == batched(5)
-    partial = (:warn, r"last batch sums 1 frames")
-    @test (@test_logs partial getframes(indices, width=w, height=h, batchsize=2, nframes=5)) == batched(2)
-    @test (@test_logs partial getframes(indices, width=w, height=h, batchsize=2)) == batched(2)[:, :, 1:2]
-    @test getframes(Int[], width=w, height=h, batchsize=1, nframes=2) == zeros(UInt16, w, h, 2)
-    @test_throws ArgumentError getframes(Int[], width=w, height=h, batchsize=1)
-    @test_throws ArgumentError getframes(indices, width=w, height=h, batchsize=1, nframes=2)
-
-    # a region whose last frame has no clicks keeps all its frames with nframes
-    ROIindices = extractROI(indices, (w, h), (1, 1, 1), (2, 2, 5))
-    @test getframes(ROIindices, width=2, height=2, batchsize=1, nframes=5) == frames[1:2, :, :]
-end
-
-# The dense format stores one bit per pixel, most significant bit first, frame by frame in
-# column-major order. Reading sums batches of frames (keeping a partial last batch, with a
-# warning) and can crop; any frame size works.
+# Dense specifics: each file holds whole frames, of any size.
 @testset "Dense binary tests" begin
     w, h = 8, 4
-    bits = BitArray(isodd(i * j + k) && (i + 2j + 3k) % 5 != 0 for i in 1:w, j in 1:h, k in 1:10)
-    pack(b) = [reduce(|, UInt8(b[8(n-1)+m]) << (8 - m) for m in 1:8) for n in 1:length(b)÷8]
-    summed(b, s) = cat((sum(UInt16.(b[:, :, k:min(k + s - 1, end)]), dims=3) for k in 1:s:size(b, 3))..., dims=3)
+    binary = BitArray(isodd(i * j + k) && (i + 2j + 3k) % 5 != 0 for i in 1:w, j in 1:h, k in 1:10)
     mktempdir() do dir
-        write(joinpath(dir, "1.bin"), pack(bits[:, :, 1:6]))
-        write(joinpath(dir, "2.bin"), pack(bits[:, :, 7:10]))
+        write(joinpath(dir, "1.bin"), densebytes(binary[:, :, 1:6]))
+        write(joinpath(dir, "2.bin"), densebytes(binary[:, :, 7:10]))
         read(; kwargs...) = readbin(dir; format=:dense, width=w, height=h, kwargs...)
         info = (:info, r"Reading 2 \.bin file\(s\)")
-        binned, output = captured(() -> @test_logs info read(batchsize=1))
-        @test binned == summed(bits, 1)
+        frames, output = captured(() -> @test_logs info read(batchsize=1))
+        @test frames == summed(binary, 1)
         @test isempty(output)
-        @test (@test_logs info read(batchsize=5)) == summed(bits, 5)
-        @test (@test_logs info (:warn, r"only contains 2 frames") read(batchsize=4)) == summed(bits, 4)
-        @test (@test_logs info read(batchsize=5, crop_origin=(3, 2), crop_width=4, crop_height=2)) ==
-              summed(bits[3:6, 2:3, :], 5)
-        @test_logs info @test_throws ArgumentError read(batchsize=5, crop_origin=(6, 1), crop_width=4)
-        @test_logs (:warn, r"Expected 6 frames") SP2TExtra.readbin_dense_directory(
-            dir; width=w, height=h, batchsize=5, frames_per_file=6)
-        # an invalid call fails before logging anything
-        @test_logs @test_throws ArgumentError readbin(dir; width=w, height=h, crop_width=4)
+        # regions in the second file only, in the first only, and across both
+        @test (@test_logs info read(batchsize=2, roiorigin=(3, 2, 7), roisize=(4, 2, 4))) ==
+              summed(binary[3:6, 2:3, 7:10], 2)
+        @test (@test_logs info read(batchsize=3, roiorigin=(1, 1, 2), roisize=(8, 4, 3))) ==
+              summed(binary[:, :, 2:4], 3)
+        @test (@test_logs info read(batchsize=4, roiorigin=(1, 1, 5), roisize=(8, 4, 4))) ==
+              summed(binary[:, :, 5:8], 4)
+        write(joinpath(dir, "3.bin"), densebytes(binary[:, :, 1])[1:2]) # half a frame
+        @test_logs (:info, r"Reading 3") @test_throws ArgumentError read(batchsize=1)
     end
 end
 

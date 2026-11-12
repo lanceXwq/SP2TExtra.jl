@@ -1,11 +1,11 @@
 module SP2TExtra
 
-using SP2T, StatsBase, TiffImages, ImageCore, Statistics
+using SP2T, TiffImages, ImageCore, Statistics
 using ProgressMeter: @showprogress
 using XMLDict
 
 export binframes, bintracks
-export readbin, getframes, extractROI, readtiff, writetiff
+export readbin, readtiff, writetiff
 export getdarkcounts
 export credible1D, credible2D, msd, tamsd, tracks, localization_error
 export xml2tracks

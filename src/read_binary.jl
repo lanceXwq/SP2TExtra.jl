@@ -1,106 +1,8 @@
 # read_binary.jl
 #
-# Unified interface for reading binary image data in dense and sparse formats.
-# - Dense: All pixels stored as bits
-# - Sparse: Only activated pixel indices stored as 32-bit integers
-
-# ============================================================================
-# SHARED UTILITIES - Coordinate Conversion
-# ============================================================================
-
-function cartesianize(
-    indices::AbstractVector{T},
-    width::Integer,
-    framesize::Integer,
-) where {T<:Integer}
-    cartesianindices = Matrix{T}(undef, length(indices), 3)
-    return cartesianize!(cartesianindices, indices, width, framesize)
-end
-
-function cartesianize!(
-    cartesianindices::AbstractMatrix{<:Integer},
-    indices::AbstractVector{<:Integer},
-    width::Integer,
-    framesize::Integer,
-)
-    cartesianindices[:, 1] .= mod1.(indices, width)
-    cartesianindices[:, 2] .= fld1.(mod1.(indices, framesize), width)
-    cartesianindices[:, 3] .= fld1.(indices, framesize)
-    return cartesianindices
-end
-
-function cartesianize!(
-    cartesianindex::AbstractVector{<:Integer},
-    index::Integer,
-    width::Integer,
-    framesize::Integer,
-)
-    cartesianindex[1] = mod1(index, width)
-    cartesianindex[2] = fld1(mod1(index, framesize), width)
-    cartesianindex[3] = fld1(index, framesize)
-    return cartesianindex
-end
-
-linearize(cartesianindices::AbstractVector{<:Integer}, width::Integer, height::Integer) =
-    (cartesianindices[3] - 1) * height * width +
-    (cartesianindices[2] - 1) * width +
-    cartesianindices[1]
-
-function linearize(
-    cartesianindices::AbstractMatrix{<:Integer},
-    width::Integer,
-    height::Integer,
-)
-    indices = similar(cartesianindices, axes(cartesianindices, 1))
-    return linearize!(indices, cartesianindices, width, height)
-end
-
-function linearize!(
-    indices::AbstractVector{<:Integer},
-    cartesianindices::AbstractMatrix{<:Integer},
-    width::Integer,
-    height::Integer,
-)
-    @views @. indices =
-        (cartesianindices[:, 3] - 1) * height * width +
-        (cartesianindices[:, 2] - 1) * width +
-        cartesianindices[:, 1]
-    return indices
-end
-
-# ============================================================================
-# SHARED UTILITIES - ROI Extraction
-# ============================================================================
-
-function extractROI!(cartesianindices, ROIbounds)
-    newupperbounds = view(ROIbounds, 1:1, :) .- 1
-    cartesianindices .-= newupperbounds
-    newupperbounds .= view(ROIbounds, 2:2, :) .- newupperbounds
-    inROI = vec(all(0 .< cartesianindices .≤ newupperbounds, dims=2))
-    return cartesianindices[inROI, :]
-end
-
-function extractROI(
-    indices::AbstractVector{<:Integer},
-    framesize::NTuple{2,<:Integer},
-    ROIorigin::NTuple{3,<:Integer},
-    ROIrange::NTuple{3,<:Integer},
-)
-    cartesianindex = similar(indices, 3)
-    newindices = similar(indices, 0)
-    for index in indices
-        cartesianize!(cartesianindex, index, framesize[1], framesize[1] * framesize[2])
-        cartesianindex .-= ROIorigin .- 1
-        if cartesianindex[3] > ROIrange[3]
-            break
-        elseif 0 < cartesianindex[1] <= ROIrange[1] &&
-               0 < cartesianindex[2] <= ROIrange[2] &&
-               0 < cartesianindex[3]
-            push!(newindices, linearize(cartesianindex, ROIrange[1], ROIrange[2]))
-        end
-    end
-    return newindices
-end
+# Reading SPAD recordings from .bin files, in dense and sparse formats, into batched frames.
+# - Dense: one bit per pixel
+# - Sparse: the indices of the pixels that clicked, as 32-bit integers
 
 # ============================================================================
 # SHARED UTILITIES - File Path Handling
@@ -134,262 +36,156 @@ function readbin_dense_one_file(file_path; width=512, height=512)
 end
 
 """
-    crop_frames(frames, crop_width, crop_height, crop_origin)
+    readdense(files, width, height, batchsize, roiorigin, roisize)
 
-Crop frames to a region of interest (ROI).
-
-crop_origin is 1-based, e.g. (1, 1) means top-left pixel.
+Internal: the batched frames of the region of dense `files` and its number of binary
+frames (`roisize[3]`, or `nothing` for the rest of the recording). Files before the region
+are skipped, and reading stops after it.
 """
-function crop_frames(frames, crop_width, crop_height, crop_origin)
-    x0 = crop_origin[1]
-    y0 = crop_origin[2]
-    x1 = x0 + crop_width - 1
-    y1 = y0 + crop_height - 1
-    return frames[x0:x1, y0:y1, :]
-end
-
-"""
-    readbin_dense_directory(path; width=512, height=512, frames_per_file=nothing, batchsize=1000, crop_width=width, crop_height=height, crop_origin=(1, 1))
-
-Read dense binary files from a directory with batching and optional cropping.
-
-The crop defaults to the whole frame. Given `frames_per_file`, warn about files with a
-different number of frames.
-"""
-function readbin_dense_directory(
-    path;
-    width=512,
-    height=512,
-    frames_per_file=nothing,
-    batchsize=1000,
-    crop_width=width,
-    crop_height=height,
-    crop_origin=(1, 1),
-)
-    files = checkpath(path)
+function readdense(files, width, height, batchsize, roiorigin, roisize)
+    framesize = width * height
     file_sizes_in_bits = filesize.(files) * 8
-    n_frames_per_file = file_sizes_in_bits .÷ (width * height)
-    n_bits_left_per_file = rem.(file_sizes_in_bits, width * height)
+    n_frames_per_file = file_sizes_in_bits .÷ framesize
+    n_bits_left_per_file = rem.(file_sizes_in_bits, framesize)
     any(n_bits_left_per_file .!= 0) && throw(ArgumentError("Some files have extra bits that do not form a complete $width × $height frame. File sizes in bits: $file_sizes_in_bits, bits left per file: $n_bits_left_per_file"))
 
-    n_frames_batched = cld(sum(n_frames_per_file), batchsize)
-    n_remaining_frames = rem(sum(n_frames_per_file), batchsize)
+    x0, y0, f0 = roiorigin
+    nframes = something(roisize[3], sum(n_frames_per_file) - f0 + 1)
+    lastframe = f0 + nframes - 1
+    (nframes >= 1 && lastframe <= sum(n_frames_per_file)) || throw(ArgumentError(
+        "The region's frames ($f0 to $lastframe) are not all in the recording's $(sum(n_frames_per_file)) frames."))
+    xs, ys = x0:x0+roisize[1]-1, y0:y0+roisize[2]-1
 
-    n_remaining_frames != 0 && @warn "Last batched frame only contains $n_remaining_frames frames instead of $batchsize"
-
-    any(crop_origin .< 1) && throw(ArgumentError("Crop_origin must be 1-based, e.g. (1, 1) for the top-left pixel"))
-    any(crop_origin .+ (crop_width, crop_height) .- 1 .> (width, height)) && throw(ArgumentError("Selected ROI exceeds FOV bounds"))
-
-    batched_frames = Array{UInt16}(undef, crop_width, crop_height, n_frames_batched)
-
-    batch_idx = 1
-    frames_in_batch = 0
-    batch_accumulator = zeros(UInt16, crop_width, crop_height)
-
-    @showprogress dt = 3 desc = "Reading binary image data" for file in files
-        frames = readbin_dense_one_file(file; width=width, height=height)
-
-        !isnothing(frames_per_file) && size(frames, 3) != frames_per_file &&
-            @warn "Expected $frames_per_file frames in $file, found $(size(frames, 3))"
-
-        if crop_width < width || crop_height < height
-            frames = crop_frames(frames, crop_width, crop_height, crop_origin)
-        end
-
-        for frame in eachslice(frames, dims=3)
-            batch_accumulator .+= frame
-            frames_in_batch += 1
-
-            if frames_in_batch == batchsize
-                copyto!(view(batched_frames, :, :, batch_idx), batch_accumulator)
-                batch_idx += 1
-                frames_in_batch = 0
-                fill!(batch_accumulator, 0)
+    frames = zeros(UInt16, roisize[1], roisize[2], cld(nframes, batchsize))
+    before = 0 # frames in the files already passed
+    @showprogress dt = 3 desc = "Reading binary image data" for (file, n) in zip(files, n_frames_per_file)
+        if before + n >= f0 && before < lastframe
+            data = readbin_dense_one_file(file; width=width, height=height)
+            for k in max(1, f0 - before):min(n, lastframe - before)
+                batch = (before + k - f0) ÷ batchsize + 1
+                @views frames[:, :, batch] .+= data[xs, ys, k]
             end
         end
+        before += n
     end
-
-    n_remaining_frames > 0 && copyto!(view(batched_frames, :, :, batch_idx), batch_accumulator)
-
-    return batched_frames
+    return frames, nframes
 end
 
 # ============================================================================
-# SPARSE FORMAT - Index Reading & Frame Generation
+# SPARSE FORMAT - Reading clicks into frames in one pass
 # ============================================================================
 
 """
-    _readbin(files)
+    readsparse(files, width, height, batchsize, roiorigin, roisize; chunk = 2^20)
 
-Internal: Read raw binary data from files as 32-bit integers.
+Internal: the batched frames of the region of sparse `files` and its number of binary
+frames, in one pass. The files are read in chunks of `chunk` values. A delimiter (a value
+of at least `width·height`) ends a frame, so the frame of every click is known without
+storing it; a table maps each pixel to its index in the region (0 outside), and each click
+in the region adds 1 to its pixel in the current batch. Without `roisize[3]` the frames grow
+until the recording ends; with it, reading stops after the region's last frame.
 """
-function _readbin(files::AbstractVector)
-    nsignals = countsignals(files)
-    signals = Vector{Int32}(undef, sum(nsignals))
-    readsignals!(files, signals, nsignals)
-    return signals
-end
-
-"""
-    countsignals(files)
-
-Count signals (32-bit integers) in each file.
-"""
-function countsignals(files::AbstractVector)
-    sizes = filesize.(files)
-    corrupted = iscorrupted.(sizes)
-    any(corrupted) && throw(
-        DomainError(
-            sizes[corrupted],
-            "File size is not divisible by 4 in $(files[corrupted])",
-        ),
-    )
-    return sizes .÷ 4
-end
-
-iscorrupted(sizeinbyte) = sizeinbyte % 4 != 0
-
-"""
-    readsignals!(files, signals, nsignals)
-
-Read raw signals from files and increment by 1 (0-indexing to 1-indexing).
-"""
-function readsignals!(
-    files::AbstractVector{String},
-    signals::Vector{<:Integer},
-    nsignals::AbstractVector{<:Integer},
-)
-    start = 1
-    @inbounds for (file, number) in zip(files, nsignals)
-        read!(file, view(signals, range(start, length=number)))
-        start += number
-    end
-    return signals .+= 1
-end
-
-"""
-    signal2indices!(indices, framesize)
-
-Convert raw signals to pixel indices by removing frame delimiters.
-"""
-function signal2indices!(indices::AbstractVector, framesize)
-    delimiters = popdelimiters!(indices, framesize)
-    indices = convert(Vector{Int}, indices)
-    return shiftindices!(indices, delimiters, framesize)
-end
-
-"""
-    popdelimiters!(signals, framesize)
-
-Remove delimiter values from signal array. A delimiter is framesize in the file, so
-framesize + 1 after `readsignals!` adds 1: every signal above framesize.
-"""
-function popdelimiters!(signals::AbstractVector, framesize)
-    delimiters = findall(>(framesize), signals)
-    # a recording that stops mid-frame has clicks after its last delimiter
-    unterminated = !isempty(signals) && (isempty(delimiters) || delimiters[end] != length(signals))
-    deleteat!(signals, delimiters)
-    delimiters .-= 1:length(delimiters)
-    if unterminated
-        @warn "The last signal is not a frame delimiter: the clicks after the last delimiter are kept as a last frame, which may be incomplete."
-        push!(delimiters, length(signals)) # close the last frame
-    end
-    return delimiters
-end
-
-"""
-    shiftindices!(indices, delimiters, framesize)
-
-Add appropriate framesize offsets to indices based on frame boundaries.
-"""
-function shiftindices!(indices, delimiters, framesize)
-    @inbounds for i = 1:length(delimiters)-1
-        @views indices[delimiters[i]+1:delimiters[i+1]] .+= i * framesize
-    end
-    return indices
-end
-
-"""
-    getframes(indices; width, height, batchsize, nframes=nothing, threshold=typemax(Int))
-
-Convert sparse indices to batched frame arrays.
-
-`nframes` is the number of raw frames. Without it, the frames end with the last click,
-so trailing frames without clicks are lost (as is common after `extractROI`). A last
-batch of fewer than `batchsize` raw frames is kept, with a warning: it sums fewer frames
-than the others.
-"""
-function getframes(
-    indices::AbstractVector{<:Integer};
-    width::Integer,
-    height::Integer,
-    batchsize::Integer,
-    nframes::Union{Integer,Nothing}=nothing,
-    threshold::Integer=typemax(Int),
-)
+function readsparse(files, width, height, batchsize, roiorigin, roisize; chunk=2^20)
     framesize = width * height
+    sizes = filesize.(files)
+    corrupted = sizes .% 4 .!= 0
+    any(corrupted) && throw(DomainError(sizes[corrupted],
+        "File size is not divisible by 4 in $(files[corrupted])"))
+
+    x0, y0, f0 = roiorigin
+    rw, rh, nframes = roisize
+    npixels = rw * rh
+    region = zeros(Int32, framesize) # 0-based pixel + 1 -> index in the region, 0 outside
+    for j in 1:rh, i in 1:rw
+        region[(y0+j-2)*width+x0+i-1] = (j - 1) * rw + i
+    end
+    lastframe = isnothing(nframes) ? typemax(Int) : f0 + nframes - 1
+    frames = zeros(UInt16, npixels * (isnothing(nframes) ? 1 : cld(nframes, batchsize)))
+
+    buffer = Vector{Int32}(undef, chunk)
+    frame = 1 # the current frame of the recording
+    nread = 0 # frames of the region read so far
+    offset = 0 # where the current batch starts in frames
+    delimited = true # whether the last value read was a delimiter
+    for (file, nvalues) in zip(files, sizes .÷ 4)
+        frame > lastframe && break
+        io = open(file)
+        try
+            while nvalues > 0 && frame <= lastframe
+                n = min(chunk, nvalues)
+                read!(io, view(buffer, 1:n))
+                nvalues -= n
+                for k in 1:n
+                    s = @inbounds buffer[k]
+                    if s >= framesize # a delimiter ends the frame
+                        frame >= f0 && (nread += 1)
+                        frame += 1
+                        frame > lastframe && break
+                        offset = nread ÷ batchsize * npixels
+                        if offset + npixels > length(frames) # only without nframes
+                            oldlength = length(frames)
+                            resize!(frames, max(2oldlength, offset + npixels))
+                            fill!(view(frames, oldlength+1:length(frames)), 0)
+                        end
+                    elseif s >= 0
+                        if frame >= f0
+                            r = @inbounds region[s+1]
+                            r != 0 && @inbounds frames[offset+r] += one(UInt16)
+                        end
+                    else
+                        throw(ArgumentError("$file holds a negative value, $s."))
+                    end
+                end
+                delimited = frame > lastframe || buffer[n] >= framesize
+            end
+        finally
+            close(io)
+        end
+    end
+    if !delimited # the recording stops mid-frame
+        @warn "The last signal is not a frame delimiter: the clicks after the last delimiter are kept as a last frame, which may be incomplete."
+        frame >= f0 && (nread += 1)
+        frame += 1
+    end
+
     if isnothing(nframes)
-        isempty(indices) &&
-            throw(ArgumentError("There are no clicks to count the frames from; pass `nframes`."))
-        nframes = fld1(maximum(indices), framesize)
-    elseif !isempty(indices) && maximum(indices) > nframes * framesize
-        throw(ArgumentError("There are clicks after frame $nframes (`nframes`)."))
+        nread >= 1 || throw(ArgumentError(
+            "The region starts at frame $f0, after the recording's $(frame - 1) frames."))
+    elseif nread < nframes
+        throw(ArgumentError(
+            "The region's frames ($f0 to $lastframe) are not all in the recording's $(frame - 1) frames."))
     end
-    nbatches, framesleft = countframes(nframes, batchsize)
-    framesleft != 0 &&
-        @warn "The last batch sums $framesleft frames, fewer than the batchsize ($batchsize)."
-    frames = _getframes(indices, framesize, batchsize, nbatches)
-    for i in eachindex(frames)
-        frames[i] .> threshold && (frames[i] = 0)
-    end
-    return reshape(frames, width, height, nbatches)
+    nbatches = cld(nread, batchsize)
+    return reshape(resize!(frames, nbatches * npixels), rw, rh, nbatches), nread
 end
-
-# the number of batches, the last one partial when the remainder is not zero
-countframes(nframes::Integer, batchsize::Integer) =
-    (cld(nframes, batchsize), rem(nframes, batchsize))
-
-"""
-    _getframes(indices, framesize, batchsize, count)
-
-Internal: Generate frame array from indices using histogram counting.
-"""
-function _getframes(
-    indices::AbstractVector{<:Integer},
-    framesize::Integer,
-    batchsize::Integer,
-    count::Integer,
-)
-    npixels = framesize * count
-    frames = zeros(UInt16, npixels)
-    addcounts!(frames, batchindices(indices, framesize, batchsize), 1:npixels)
-    return frames
-end
-
-batchindices(indices, framesize, batchsize) =
-    @. (indices - 1) ÷ (framesize * batchsize) * framesize + mod1(indices, framesize)
 
 # ============================================================================
-# UNIFIED API - Main Entry Points
+# UNIFIED API - Main Entry Point
 # ============================================================================
 
 """
-    readbin(path; format=:sparse, width=512, height=512, batchsize=1000, crop_origin, crop_width, crop_height)
+    readbin(path; format=:sparse, width=512, height=512, batchsize=1000, roiorigin=(1, 1, 1), roisize=nothing, threshold=typemax(Int))
 
-Read binary image data in dense or sparse format.
+Read a SPAD recording from a `.bin` file, or from the `.bin` files of a directory (read in
+name order, as one stream), and return the frames of a region: `(roiwidth, roiheight,
+nbatches)` `UInt16` counts, each the sum of `batchsize` binary frames.
 
-# Arguments
-- `path`: File or directory path
-- `format`: `:dense` or `:sparse` (default)
-- `width`, `height`: Image dimensions
-- `batchsize`: Frames per batch (dense only)
-- `crop_origin`, `crop_width`, `crop_height`: Region to keep while reading (dense only;
-  default: the whole frame). `crop_origin` is the 1-based `(x, y)` of its first pixel. For
-  sparse files, crop the indices afterwards with `extractROI`.
+# Formats
+- `:sparse` (default): `Int32` values. Each frame lists the 0-based indices of the pixels
+  that clicked, then a delimiter (`width·height`). Frames may continue in the next file.
+  Clicks after the last delimiter are kept as a last frame, with a warning.
+- `:dense`: one bit per pixel, most significant bit first, frame after frame, in whole
+  frames per file.
 
-# Returns
-- Dense format: Batched frames array (width × height × nbatches)
-- Sparse format: Pixel indices array
+# Keywords
+- `width`, `height`: the size of the recorded frames.
+- `batchsize`: binary frames summed per frame, from 1 to 65535 (so the sums fit `UInt16`).
+  A last batch of fewer binary frames is kept, with a warning.
+- `roiorigin = (x, y, frame)`: the region's first pixel and first binary frame, 1-based.
+- `roisize = (width, height, nframes)`: the region's size in pixels and binary frames.
+  `(width, height)` reads to the end of the recording, and `nothing` (default) also to the
+  edges of the frame. A region outside the frame or the recording is an `ArgumentError`.
+- `threshold`: counts above it are set to 0.
 """
 function readbin(
     path;
@@ -397,30 +193,29 @@ function readbin(
     width::Integer=512,
     height::Integer=512,
     batchsize::Integer=1000,
-    crop_origin::Union{NTuple{2,Integer},Nothing}=nothing,
-    crop_width::Union{Integer,Nothing}=nothing,
-    crop_height::Union{Integer,Nothing}=nothing,
+    roiorigin::NTuple{3,Integer}=(1, 1, 1),
+    roisize::Union{Nothing,NTuple{2,Integer},NTuple{3,Integer}}=nothing,
+    threshold::Integer=typemax(Int),
 )
     format in (:dense, :sparse) || throw(ArgumentError("format must be :dense or :sparse"))
-    format == :sparse && !all(isnothing, (crop_origin, crop_width, crop_height)) && throw(
-        ArgumentError("Cropping while reading applies to dense files only; crop sparse indices with `extractROI`."),
-    )
+    1 <= batchsize <= typemax(UInt16) || throw(ArgumentError(
+        "batchsize must lie between 1 and 65535, so that the summed counts fit UInt16."))
+    x0, y0, f0 = roiorigin
+    rw, rh = isnothing(roisize) ? (width - x0 + 1, height - y0 + 1) : roisize[1:2]
+    nframes = roisize isa NTuple{3,Integer} ? roisize[3] : nothing
+    (min(x0, y0, f0, rw, rh, something(nframes, 1)) >= 1 && x0 + rw - 1 <= width &&
+     y0 + rh - 1 <= height) || throw(ArgumentError(
+        "The region (roiorigin = $roiorigin, roisize = $roisize) must lie within the $width × $height frames."))
     files = checkpath(path)
     @info "Reading $(length(files)) .bin file(s) from $path"
 
-    if format == :dense
-        return readbin_dense_directory(
-            path;
-            width=width,
-            height=height,
-            batchsize=batchsize,
-            crop_origin=something(crop_origin, (1, 1)),
-            crop_width=something(crop_width, width),
-            crop_height=something(crop_height, height),
-        )
-    else
-        return signal2indices!(_readbin(files), width * height)
-    end
+    reader = format == :dense ? readdense : readsparse
+    frames, nread = reader(files, width, height, batchsize, (x0, y0, f0), (rw, rh, nframes))
+    framesleft = rem(nread, batchsize)
+    framesleft != 0 &&
+        @warn "The last batch sums $framesleft frames, fewer than the batchsize ($batchsize)."
+    threshold < batchsize && map!(c -> c > threshold ? zero(c) : c, frames, frames)
+    return frames
 end
 
 # ============================================================================

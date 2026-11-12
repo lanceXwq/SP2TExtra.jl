@@ -18,32 +18,24 @@ function binframes(frames::AbstractArray{T,3}, batchsize::Integer) where {T<:Int
     if n == nframes
         sumbin!(binned, frames)
     else
+        # SP2T's detectors assume every frame sums batchsize raw frames
+        @warn "The last batch sums $(nframes - n) frames, fewer than the batchsize ($batchsize)."
         @views sumbin!(binned[:, :, 1:end-1], frames[:, :, 1:n])
         @views sum!(binned[:, :, end], frames[:, :, n+1:end])
     end
     return binned
 end
 
-function meanbin!(binned::AbstractArray{T,3}, tobin::AbstractArray{T,3}, batchsize::Integer) where {T<:AbstractFloat}
-    @views for i in axes(binned, 1)
-        mean!(
-            binned[i:i, :, :],
-            tobin[(i-1)*batchsize+1:i*batchsize, :, :],
-            weights(ones(T, batchsize)),
-            dims=1,
-        )
-    end
-    return binned
-end
-
+# The mean position over each batch of frames, a partial last batch included, so the result
+# matches binframes frame for frame. No warning: the mean of the frames left over is still
+# the position for the last binned frame (binframes warns about that frame).
 function bintracks(tracks::AbstractArray{<:AbstractFloat,3}, batchsize::Integer)
-    binned = similar(
-        tracks,
-        size(tracks, 1) ÷ batchsize,
-        size(tracks, 2),
-        size(tracks, 3),
-    )
-    meanbin!(binned, tracks, batchsize)
+    nframes = size(tracks, 1)
+    binned = similar(tracks, cld(nframes, batchsize), size(tracks, 2), size(tracks, 3))
+    @views for i in axes(binned, 1)
+        batch = (i-1)*batchsize+1:min(i * batchsize, nframes)
+        mean!(binned[i:i, :, :], tracks[batch, :, :])
+    end
     return binned
 end
 

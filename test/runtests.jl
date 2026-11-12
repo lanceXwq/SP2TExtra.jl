@@ -194,3 +194,24 @@ end
         @test isapprox(readtiff(path)[2]["pixel size"], 0.065; rtol=1e-4)
     end
 end
+
+# binframes sums and bintracks averages each batch of frames, a partial last batch included,
+# so the two stay aligned frame for frame. With x[t] = t + 10d + 100p, the binned position is
+# the mean frame number of the batch. Only binframes warns about a partial batch.
+@testset "Binning tests" begin
+    frames = UInt8[(i * j + k) % 2 for i in 1:4, j in 1:3, k in 1:10]
+    x = [t + 10.0d + 100p for t in 1:10, d in 1:2, p in 1:3]
+    for (batchsize, batches) in ((5, [1:5, 6:10]), (3, [1:3, 4:6, 7:9, 10:10]))
+        expected = cat((sum(frames[:, :, b]; dims=3) for b in batches)...; dims=3)
+        binned = if length(batches[end]) < batchsize
+            @test_logs (:warn, r"last batch sums 1 frames") binframes(frames, batchsize)
+        else
+            @test_logs binframes(frames, batchsize)
+        end
+        @test binned == expected
+        means = [sum(b) / length(b) for b in batches]
+        @test (@test_logs bintracks(x, batchsize)) ≈
+              [m + 10d + 100p for m in means, d in 1:2, p in 1:3]
+        @test size(bintracks(x, batchsize), 1) == size(binned, 3)
+    end
+end

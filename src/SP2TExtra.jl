@@ -5,7 +5,7 @@ using ProgressMeter: @showprogress
 using XMLDict
 
 export binframes, bintracks
-export readbin, getframes, extractROI, readtiff, writetiff, ImageJTIff
+export readbin, getframes, extractROI, readtiff, writetiff
 export getdarkcounts
 export credible1D, credible2D, msd, tamsd, tracks, localization_error
 export xml2tracks

@@ -1,7 +1,3 @@
-abstract type TiffMeta end
-
-struct ImageJTIff <: TiffMeta end
-
 function getbits(ifds::AbstractVector{<:TiffImages.IFD})
     bits = [ifd[TiffImages.BITSPERSAMPLE].data for ifd in ifds]
     if length(unique(bits)) > 1
@@ -71,5 +67,3 @@ function writetiff(path::String, frames::AbstractArray{UInt16,3}; px_size::Real=
     ifdvec[1][TiffImages.IMAGEDESCRIPTION] = "unit=$unit\nfinterval=$period"
     TiffImages.save(path, tiff)
 end
-
-# writetiff(frames::AbstractArray{UInt16,3}, path::String, ::ImageJTIff; metadata::Dict) = writetiff(frames, path, ImageJTIff(); px_size=metadata["pixel size"], unit=metadata["unit"], period=metadata["period"])

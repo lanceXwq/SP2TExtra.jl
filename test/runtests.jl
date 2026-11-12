@@ -37,6 +37,41 @@ using Test
         0.7251632119133569 0.23299726272920693 0.0;
         0.7047287916318168 0.2099248946689253 0.0]
     @test isapprox(xml2tracks("./testtracks.xml", nframes=34, batchsize=1), gttracks)
+
+    # A track with a single detection, and a file with no tracks. Detection t (0-based) fills
+    # frames t·batchsize .+ (1:batchsize); frames without a detection are NaN.
+    trackmate(particles...) = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <Tracks nTracks="$(length(particles))" spaceUnits="micron" frameInterval="1.0" timeUnits="frame">
+        $(join(particles, "\n"))
+        </Tracks>
+        """
+    particle(detections...) = """
+        <particle nSpots="$(length(detections))">
+        $(join(("<detection t=\"$t\" x=\"$x\" y=\"$y\" z=\"$z\" />" for (t, x, y, z) in detections), "\n"))
+        </particle>"""
+    mktempdir() do dir
+        path = joinpath(dir, "tracks.xml")
+
+        write(path, trackmate(particle((0, 1.0, 2.0, 0.0), (1, 1.5, 2.5, 0.0)), particle((2, 3.0, 4.0, 0.5))))
+        expected = fill(NaN, 3, 3, 2)
+        expected[1:2, :, 1] = [1.0 2.0 0.0; 1.5 2.5 0.0]
+        expected[3, :, 2] = [3.0, 4.0, 0.5]
+        @test isequal(xml2tracks(path; nframes=3), expected)
+
+        expected = fill(NaN, 6, 3, 2)
+        expected[1:4, :, 1] = [1.0 2.0 0.0; 1.0 2.0 0.0; 1.5 2.5 0.0; 1.5 2.5 0.0]
+        expected[5:6, :, 2] = [3.0 4.0 0.5; 3.0 4.0 0.5]
+        @test isequal(xml2tracks(path; nframes=6, batchsize=2), expected)
+
+        write(path, trackmate(particle((1, 3.0, 4.0, 0.5))))
+        expected = fill(NaN, 3, 3, 1)
+        expected[2, :, 1] = [3.0, 4.0, 0.5]
+        @test isequal(xml2tracks(path; nframes=3), expected)
+
+        write(path, trackmate())
+        @test size(xml2tracks(path; nframes=3)) == (3, 3, 0)
+    end
 end
 
 # A click at column i, row j of frame k has the linear index (k-1)·w·h + (j-1)·w + i.

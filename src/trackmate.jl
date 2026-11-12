@@ -1,5 +1,13 @@
+# XMLDict gives an element that repeats as a vector, a single one as itself, and none at all
+# as a missing key; list them the same way in each case.
+function xmlelements(dict::XMLDict.XMLDictElement, key::String)
+    haskey(dict, key) || return XMLDict.XMLDictElement[]
+    elements = dict[key]
+    return elements isa AbstractVector ? elements : [elements]
+end
+
 function parsedetection!(x::AbstractArray{<:Real,2}, particle::XMLDict.XMLDictElement, batchsize::Integer)
-    for detection in particle["detection"]
+    for detection in xmlelements(particle, "detection")
         trange = tryparse(Int, detection[:t]) * batchsize .+ (1:batchsize)
         for (dim, coord) in enumerate([:x, :y, :z])
             x[trange, dim] .= tryparse(Float64, detection[coord])
@@ -9,12 +17,8 @@ function parsedetection!(x::AbstractArray{<:Real,2}, particle::XMLDict.XMLDictEl
 end
 
 function parseparticle!(x::AbstractArray{<:Real,3}, dict::XMLDict.XMLDictElement, batchsize::Integer)
-    if dict["particle"] isa Vector
-        for (m, detection) in enumerate(dict["particle"])
-            parsedetection!(view(x, :, :, m), detection, batchsize)
-        end
-    else
-        parsedetection!(view(x, :, :, 1), dict["particle"], batchsize)
+    for (m, particle) in enumerate(xmlelements(dict, "particle"))
+        parsedetection!(view(x, :, :, m), particle, batchsize)
     end
     return x
 end

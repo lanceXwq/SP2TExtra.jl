@@ -250,3 +250,28 @@ end
         @test size(bintracks(x, batchsize), 1) == size(binned, 3)
     end
 end
+
+# A pixel that clicks in k of N binary frames has the dark count -log(1 - k/N): 4 frames of
+# batchsize 3 give N = 12, and k = 0, 3, 6, 12 give 0, log(4/3), log(2), Inf. A pixel that
+# always clicks gives Inf with a warning, and SP2T filters it out. Readouts above the
+# batchsize mean a wrong batchsize.
+@testset "Dark count tests" begin
+    darkframes = zeros(UInt8, 2, 2, 4)
+    darkframes[2, 1, :] = [1, 0, 2, 0] # k = 3
+    darkframes[1, 2, :] = [3, 0, 3, 0] # k = 6
+    darkframes[2, 2, :] .= 3 # k = 12
+    darkcounts = @test_logs (:warn, r"1 pixel\(s\) clicked in every binary frame") getdarkcounts(
+        darkframes; batchsize=3)
+    @test darkcounts ≈ [0 log(2); log(4 / 3) Inf]
+    detector = SP2TExtra.SP2T.SPAD{Float64}(period=1, pixel_size=0.1, darkcounts=darkcounts,
+        cutoffs=(0, Inf), readouts=zeros(UInt16, 2, 2, 1), batchsize=3)
+    @test detector.filter == [1 1; 1 0]
+
+    # binary frames: k = 0, 2, 3 of N = 4 give 0, log(2), log(4)
+    binary = zeros(UInt8, 2, 2, 4)
+    binary[2, 1, :] = [1, 0, 1, 0]
+    binary[1, 2, :] = [1, 1, 1, 0]
+    @test (@test_logs getdarkcounts(binary)) ≈ [0 log(4); log(2) 0]
+
+    @test_throws ArgumentError getdarkcounts(darkframes)
+end

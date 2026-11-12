@@ -424,8 +424,35 @@ end
     @eval using CairoMakie
     CairoMakie.activate!(visible = false) # display renders without opening a viewer
     @test !isnothing(Base.get_extension(SP2TExtra, :SP2TExtraMakieExt))
-    frames = zeros(UInt16, 6, 4, 3)
-    frames[2, 3, 2] = 5
-    tracks = [0.1 0.2; 0.15 0.25; 0.2 0.3;;;]
-    @test isnothing(first(captured(() -> viewframes(frames; tracks, pxsize = 0.1))))
+
+    # SP2T's pixel (i, j) covers [(i - 1)·pxsize, i·pxsize] × [(j - 1)·pxsize, j·pxsize]
+    width, height, pxsize = 12, 6, 0.1
+    frames = zeros(UInt16, width, height, 3)
+    frames[10, 2, :] .= 5
+    # from the center of pixel (10, 2) to that of pixel (2, 6)
+    tracks = reshape(([10 2; 6 4; 2 6] .- 1 / 2) .* pxsize, 3, 2, 1)
+    @test isnothing(first(captured(() -> viewframes(frames; tracks, pxsize))))
+    fig = current_figure()
+    ax = only(c for c in fig.content if c isa Axis)
+    plotsof(T) = [p for p in ax.scene.plots if p isa T]
+    @test ax.yreversed[]
+    heatmap = only(plotsof(Heatmap))
+    xedges, yedges = heatmap[1][], heatmap[2][]
+    @test xedges == 0:width && yedges == 0:height # pixel edges, in pixels
+    @test heatmap[3][] == frames[:, :, 1] # neither rotated nor transposed
+    frameslider = first(only(c for c in fig.content if c isa SliderGrid).sliders)
+    set_close_to!(frameslider, 3)
+    track = only(plotsof(Lines))[1][]
+    @test length(track) == 3
+    @test xedges[10] < track[1][1] < xedges[11] && yedges[2] < track[1][2] < yedges[3]
+
+    regionsliders = [c for c in fig.content if c isa IntervalSlider]
+    xslider = only(s for s in regionsliders if s.horizontal[])
+    yslider = only(s for s in regionsliders if !s.horizontal[])
+    region = only(plotsof(Poly))[1]
+    @test region[] == Rect(0, 0, width, height)
+    set_close_to!(xslider, 2, 8) # x edges 2 to 8
+    set_close_to!(yslider, 1, 5) # counted from the bottom: y edges 6 - 5 = 1 to 6 - 1 = 5
+    @test region[] == Rect(2, 1, 6, 4)
+    @test sort([only(p.text[]) for p in plotsof(CairoMakie.Text)]) == ["(3, 2)", "(6, 4)"] # first pixel, size
 end

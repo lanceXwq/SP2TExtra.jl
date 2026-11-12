@@ -26,11 +26,13 @@ function validaterange(s::String)
     return eltype(parsed_vec) == Int64 && length(parsed_vec) == 2
 end
 
-getrect(w_sl, h_sl) = @lift Rect(
-    $(w_sl.interval)[1] - 0.5,
-    $(h_sl.interval)[2] + 0.5,
-    $(w_sl.interval)[2] - $(w_sl.interval)[1] + 1,
-    $(h_sl.interval)[1] - $(h_sl.interval)[2],
+# The region between the sliders' pixel edges. The vertical slider counts up from the
+# bottom, the image's y down from the top.
+getrect(w_sl, h_sl, height) = @lift Rect(
+    $(w_sl.interval)[1],
+    height - $(h_sl.interval)[2],
+    $(w_sl.interval)[2] - $(w_sl.interval)[1],
+    $(h_sl.interval)[2] - $(h_sl.interval)[1],
 )
 
 getvertices(rect) = (@lift $(rect).origin), (@lift $(rect).origin .+ $(rect).widths)
@@ -76,7 +78,7 @@ function SP2TExtra.viewframes(
 
     colorrange = @lift (0, $(slgrid.sliders[2].value))
 
-    frameobs = @lift rotr90(view(frames, :, :, $(slgrid.sliders[1].value)))
+    frameobs = @lift view(frames, :, :, $(slgrid.sliders[1].value))
 
     tracks2 = tracks ./ pxsize
     trajs2D = []
@@ -87,12 +89,14 @@ function SP2TExtra.viewframes(
     foreach(x -> push!(trajs2Dobs, @lift view(x, 1:$(slgrid.sliders[1].value))), trajs2D)
 
 
-    heatmap!(ax, 1:width, 1:height, frameobs, colorrange = colorrange)
-    limits!(ax, 0.5, width + 0.5, 0.5, height + 0.5)
+    # pixel edges, in pixels: pixel (i, j) covers [i - 1, i] × [j - 1, j], as in SP2T, so
+    # the tracks divided by pxsize land on the pixels that saw them
+    heatmap!(ax, 0:width, 0:height, frameobs, colorrange = colorrange)
+    limits!(ax, 0, width, height, 0) # y down, as in images (the order reverses the axis)
 
     foreach(x -> lines!(ax, x), trajs2Dobs)
 
-    @show rect = getrect(w_sl, h_sl)
+    @show rect = getrect(w_sl, h_sl, height)
     poly!(ax, rect, color = (:white, 0))
     # @show w_sl.interval, rect[].origin
     # sl_tags = (@lift rect[].origin)
@@ -101,8 +105,8 @@ function SP2TExtra.viewframes(
     # @show rect[].orgin = 1
 
     # txts = @show @lift "($($(rect).origin[1] - 0.5), $($(rect).origin[2]+$(rect).widths[2]) )"
-    topleft_txt =
-        @lift "($(ceil(Int, $(rect).origin[1])), $(floor(Int, $(rect).origin[2])))"
+    # the region's first pixel (x, y) and its size, as extractROI takes them
+    topleft_txt = @lift "($($(rect).origin[1] + 1), $($(rect).origin[2] + 1))"
     bottomright_txt = @lift "($($(rect).widths[1]), $($(rect).widths[2]))"
 
     @show verts = getvertices(rect)

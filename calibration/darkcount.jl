@@ -2,8 +2,9 @@
 # frame, as SP2T's detectors take them) from a sparse SPAD recording made without emitters,
 # within the region that the tracking data will use, and save them for SP2T.
 #
-# Needs SP2TExtra, JLD2 and GLMakie in the active environment.
-using SP2TExtra
+# Needs SP2T, SP2TExtra, JLD2 and GLMakie in the active environment.
+using SP2T # getdarkcounts
+using SP2TExtra # readbin
 using JLD2
 using GLMakie
 

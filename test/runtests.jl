@@ -285,66 +285,6 @@ end
     @test_throws ArgumentError tamsd(x; lags=[12])
 end
 
-# The localization error is the RMS over frames and coordinates of the per-coordinate
-# posterior standard deviation. Samples at μ ± s have the variance s² (over the samples
-# themselves), so the error is sqrt(mean(s²)). A sample far away is skipped as burn-in;
-# samples with other than one emitter are rejected.
-@testset "Localization error tests" begin
-    S = SP2TExtra.SP2T
-    sample(x) = S.Sample(x, 1.0, 1.0, 0, 1.0, NaN, NaN)
-    chain(xs...) = S.Chain([sample(x) for x in xs], 10, S.ConstantAnnealing{Float64}(1))
-    μ = reshape([1.0 2.0; 1.5 2.5; 2.0 3.0], 3, 2, 1)
-    s = reshape([0.1 0.2; 0.3 0.1; 0.2 0.4], 3, 2, 1)
-    far = fill(50.0, 3, 2, 1)
-    @test localization_error(chain(far, μ .+ s, μ .- s); burn_in=1) ≈ sqrt(sum(s .^ 2) / 6)
-    @test localization_error(chain(μ .+ s, μ .- s, μ .+ s, μ .- s)) ≈ sqrt(sum(s .^ 2) / 6)
-    @test_throws ArgumentError localization_error(chain(μ .+ s, cat(μ, μ .- s; dims=3)))
-    @test_throws ArgumentError localization_error(chain(μ .+ s, μ .- s); burn_in=2)
-end
-
-# tracks(chain; burn_in) concatenates, in order, the emitters of every sample after the
-# first burn_in, whatever their number.
-@testset "Chain tracks tests" begin
-    S = SP2TExtra.SP2T
-    sample(x) = S.Sample(x, 1.0, 1.0, 0, 1.0, NaN, NaN)
-    chain(xs...) = S.Chain([sample(x) for x in xs], 10, S.ConstantAnnealing{Float64}(1))
-    a, b, c = (reshape(Float64.(n .+ (1:6)), 3, 2, 1) for n in (0, 10, 20))
-    d = reshape(Float64.(31:36), 3, 2, 1)
-    @test tracks(chain(a, cat(b, c; dims=3), d)) == cat(a, b, c, d; dims=3)
-    @test tracks(chain(a, cat(b, c; dims=3), d); burn_in=1) == cat(b, c, d; dims=3)
-    @test size(tracks(chain(a, b); burn_in=2)) == (3, 2, 0)
-end
-
-# credible1D and credible2D give, for each frame, the fraction of sampled positions in each
-# bin: for one particle (i) or pooled over all. Two identical samples, two frames: particle 1
-# is at (0.5, 1.5) then (1.5, 2.5), particle 2 at (2.5, 0.5) in both; bins 0:1:3 on each
-# axis. credible2D's rows are x bins and its columns y bins.
-@testset "Credible region tests" begin
-    S = SP2TExtra.SP2T
-    positions = cat([0.5 1.5; 1.5 2.5], [2.5 0.5; 2.5 0.5]; dims=3) # (frame, x/y, particle)
-    samples = [S.Sample(positions, 1.0, 1.0, 0, 1.0, NaN, NaN) for _ in 1:2]
-    edges = 0:1:3
-
-    x, y = credible1D(samples, 1, edges, edges)
-    @test x == [1 0 0; 0 1 0]
-    @test y == [0 1 0; 0 0 1]
-    x, y = credible1D(samples, edges, edges)
-    @test x == [0.5 0 0.5; 0 0.5 0.5]
-    @test y == [0.5 0.5 0; 0.5 0 0.5]
-
-    onehot(i, j) = (h = zeros(3, 3); h[i, j] = 1; h)
-    c = credible2D(samples, 1, edges, edges)
-    @test c[:, :, 1] == onehot(1, 2) # x bin 1, y bin 2
-    @test c[:, :, 2] == onehot(2, 3)
-    c = credible2D(samples, edges, edges)
-    @test c[:, :, 1] == (onehot(1, 2) + onehot(3, 1)) / 2
-    @test c[:, :, 2] == (onehot(2, 3) + onehot(3, 1)) / 2
-
-    # factor and shift: positions are shifted, then scaled, before binning
-    x, ~ = credible1D(samples, 1, 0:2:6, edges; factor=2, xshift=0.5)
-    @test x == [1 0 0; 0 1 0] # 2·(0.5 + 0.5) = 2 and 2·(1.5 + 0.5) = 4
-end
-
 # A TIFF written by writetiff reads back the same: frames, period, unit and pixel size. TIFF
 # stores the resolution (pixels per unit, rounded by writetiff to 3 decimals), so the pixel
 # size comes back exactly for 0.1 and within that rounding for 0.065.
@@ -434,31 +374,6 @@ end
           fill(65535, 1, 1, 1)
     @test_throws ArgumentError binframes([fill(UInt16(65535), 1, 1, 1);;; ones(UInt16, 1, 1, 2)], 3)
     @test_throws ArgumentError binframes(fill(-1, 1, 1, 2), 2)
-end
-
-# A pixel that clicks in k of N binary frames has the dark count -log(1 - k/N): 4 frames of
-# batchsize 3 give N = 12, and k = 0, 3, 6, 12 give 0, log(4/3), log(2), Inf. A pixel that
-# always clicks gives Inf with a warning, and SP2T filters it out. Readouts above the
-# batchsize mean a wrong batchsize.
-@testset "Dark count tests" begin
-    darkframes = zeros(UInt8, 2, 2, 4)
-    darkframes[2, 1, :] = [1, 0, 2, 0] # k = 3
-    darkframes[1, 2, :] = [3, 0, 3, 0] # k = 6
-    darkframes[2, 2, :] .= 3 # k = 12
-    darkcounts = @test_logs (:warn, r"1 pixel\(s\) clicked in every binary frame") getdarkcounts(
-        darkframes; batchsize=3)
-    @test darkcounts ≈ [0 log(2); log(4 / 3) Inf]
-    detector = SP2TExtra.SP2T.SPAD{Float64}(period=1, pixel_size=0.1, darkcounts=darkcounts,
-        cutoffs=(0, Inf), readouts=zeros(UInt16, 2, 2, 1), batchsize=3)
-    @test detector.filter == [1 1; 1 0]
-
-    # binary frames: k = 0, 2, 3 of N = 4 give 0, log(2), log(4)
-    binary = zeros(UInt8, 2, 2, 4)
-    binary[2, 1, :] = [1, 0, 1, 0]
-    binary[1, 2, :] = [1, 1, 1, 0]
-    @test (@test_logs getdarkcounts(binary)) ≈ [0 log(4); log(2) 0]
-
-    @test_throws ArgumentError getdarkcounts(darkframes)
 end
 
 @testset "Viewer tests" begin
